@@ -54,9 +54,10 @@ async def generate_image(
             styling_options = ImageStylingOptions()
 
         # Generate image via OpenAI API
+        no_text_suffix = " Do not include any text, words, labels, numbers, or writing in the image."
         result = client.images.generate(
             model="gpt-image-1",
-            prompt=prompt,
+            prompt=prompt + no_text_suffix,
             quality="low",  # hardcoded low quality for speed/efficiency
             size=styling_options.size,
             output_format=styling_options.output_format,
