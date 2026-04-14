@@ -66,27 +66,27 @@
             ref: document.getElementById('gradient-canvas'),
             colors: [
                 {
-                    color: '#FDA110',
-                    enabled: true,
-                },
-                {
                     color: '#444CE7',
                     enabled: true,
                 },
                 {
-                    color: '#211B4E',
+                    color: '#141414',
                     enabled: true,
                 },
                 {
-                    color: '#D300DB',
+                    color: '#2A2B8A',
                     enabled: true,
                 },
                 {
-                    color: '#f5e1e5',
+                    color: '#F8FAFC',
+                    enabled: true,
+                },
+                {
+                    color: '#141414',
                     enabled: false,
                 },
             ],
-            speed: 1.5,
+            speed: 0,
             horizontalPressure: 3,
             verticalPressure: 5,
             waveFrequencyX: 2,
@@ -95,10 +95,10 @@
             shadows: 0,
             highlights: 2,
             colorBrightness: 1,
-            colorSaturation: 7,
+            colorSaturation: 3,
             wireframe: false,
             colorBlending: 7,
-            backgroundColor: '#003FFF',
+            backgroundColor: '#141414',
             backgroundAlpha: 1,
             grainScale: 2,
             grainSparsity: 0,
@@ -128,6 +128,8 @@
         
         let workflowId = null;
         let currentQuestionIndex = 0;
+        let spinnerStartTime = null;
+        let retryCheckInterval = null;
 
         // Add message to chat with animation
         function addMessage(text, isUser = false) {
@@ -148,6 +150,22 @@
         // Show/hide spinner
         function showSpinner(visible) {
             spinnerContainer.style.display = visible ? 'flex' : 'none';
+            if (visible) {
+                spinnerStartTime = Date.now();
+                spinnerContainer.classList.remove('retrying');
+                document.querySelector('.researching-text').textContent = 'Thinking...';
+                clearInterval(retryCheckInterval);
+                retryCheckInterval = setInterval(() => {
+                    if (Date.now() - spinnerStartTime > 5000) {
+                        spinnerContainer.classList.add('retrying');
+                        document.querySelector('.researching-text').textContent = 'This is taking a little longer than expected, please bear with us...';
+                        clearInterval(retryCheckInterval);
+                    }
+                }, 1000);
+            } else {
+                spinnerContainer.classList.remove('retrying');
+                clearInterval(retryCheckInterval);
+            }
         }
 
         // Handle form submission
@@ -196,6 +214,10 @@
                     showSpinner(false);
                     addMessage(status.current_question);
                 } else if (status.status === 'researching') {
+                    // Switch to researching text, reset retrying state
+                    spinnerContainer.classList.remove('retrying');
+                    document.querySelector('.researching-text').textContent = 'Researching...';
+                    clearInterval(retryCheckInterval);
                     // Keep spinner visible, continue polling
                     setTimeout(pollStatus, 1000);
                     

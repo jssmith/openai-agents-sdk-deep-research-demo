@@ -88,27 +88,27 @@
             ref: document.getElementById('gradient-canvas'),
             colors: [
                 {
-                    color: '#FDA110',
-                    enabled: true,
-                },
-                {
                     color: '#444CE7',
                     enabled: true,
                 },
                 {
-                    color: '#211B4E',
+                    color: '#141414',
                     enabled: true,
                 },
                 {
-                    color: '#D300DB',
+                    color: '#2A2B8A',
                     enabled: true,
                 },
                 {
-                    color: '#f5e1e5',
+                    color: '#F8FAFC',
+                    enabled: true,
+                },
+                {
+                    color: '#141414',
                     enabled: false,
                 },
             ],
-            speed: 1.5,
+            speed: 0,
             horizontalPressure: 3,
             verticalPressure: 5,
             waveFrequencyX: 2,
@@ -117,10 +117,10 @@
             shadows: 0,
             highlights: 2,
             colorBrightness: 1,
-            colorSaturation: 7,
+            colorSaturation: 3,
             wireframe: false,
             colorBlending: 7,
-            backgroundColor: '#003FFF',
+            backgroundColor: '#141414',
             backgroundAlpha: 1,
             grainScale: 2,
             grainSparsity: 0,
@@ -130,6 +130,8 @@
         });
     </script>
 
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/lib/marked.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id@4.1.1/lib/index.umd.min.js"></script>
     <script src="static/src/js/api-client.js"></script>
     <script>
         // Accordion functionality
@@ -195,30 +197,10 @@
             }
         }
 
-        // Simple markdown to HTML converter
+        // Markdown to HTML using marked library with heading IDs
+        marked.use(markedGfmHeadingId.gfmHeadingId());
         function convertMarkdownToHTML(markdown) {
-            let html = markdown;
-            
-            // Headers
-            html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-            html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-            html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-            
-            // Bold
-            html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-            
-            // Italic
-            html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-            
-            // Paragraphs
-            html = html.split('\n\n').map(para => {
-                if (!para.startsWith('<h') && para.trim()) {
-                    return '<p>' + para + '</p>';
-                }
-                return para;
-            }).join('\n');
-            
-            return html;
+            return marked.parse(markdown);
         }
 
         // Download markdown as file
@@ -233,6 +215,26 @@
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }
+
+        // Handle anchor links within markdown content by scrolling the accordion
+        document.querySelector('.markdown-content').addEventListener('click', function(e) {
+            const link = e.target.closest('a');
+            if (link && link.getAttribute('href')?.startsWith('#')) {
+                e.preventDefault();
+                const targetId = link.getAttribute('href').slice(1);
+                // Try exact match first, then fuzzy match (heading IDs may have number prefixes)
+                let target = document.getElementById(targetId);
+                if (!target) {
+                    target = document.querySelector('.markdown-content [id$="' + CSS.escape(targetId) + '"]');
+                }
+                if (target) {
+                    accordionContent.scrollTo({
+                        top: target.offsetTop - accordionContent.offsetTop,
+                        behavior: 'smooth'
+                    });
+                }
+            }
+        });
 
         // Load result on page load
         document.addEventListener('DOMContentLoaded', loadResearchResult);
