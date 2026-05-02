@@ -24,12 +24,14 @@ def _search_branch_failure_attempts() -> int:
 
 
 def _search_branch_failure_after_seconds() -> float:
+    # Default high enough that a presenter has time to invoke scripts/crash-worker
+    # manually (visible causation) before the auto-kill safety net fires.
     return float(
         os.getenv(
             "DEMO_SEARCH_BRANCH_FAILURE_AFTER_SECONDS",
-            os.getenv("DEMO_SEARCH_AGENT_CRASH_AFTER_SECONDS", "4"),
+            os.getenv("DEMO_SEARCH_AGENT_CRASH_AFTER_SECONDS", "20"),
         )
-        or "4"
+        or "20"
     )
 
 

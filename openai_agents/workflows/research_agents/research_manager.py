@@ -243,12 +243,16 @@ class InteractiveResearchManager:
                 search_index=item_index,
                 search_query=item.query,
             ),
-            start_to_close_timeout=timedelta(seconds=8),
-            schedule_to_close_timeout=timedelta(seconds=120),
+            # start_to_close must be longer than the auto-crash delay
+            # (DEMO_SEARCH_BRANCH_FAILURE_AFTER_SECONDS, default 20s) so the
+            # activity has a chance to actually SIGKILL the worker rather than
+            # being torn down by Temporal first. The clean path returns in ~0.3s.
+            start_to_close_timeout=timedelta(seconds=45),
+            schedule_to_close_timeout=timedelta(seconds=180),
             retry_policy=RetryPolicy(
-                initial_interval=timedelta(seconds=8),
+                initial_interval=timedelta(seconds=2),
                 backoff_coefficient=1.0,
-                maximum_interval=timedelta(seconds=8),
+                maximum_interval=timedelta(seconds=2),
                 maximum_attempts=2,
             ),
         )
@@ -258,12 +262,15 @@ class InteractiveResearchManager:
             request = DataWarehouseRequest(query=query)
             activity_options = {
                 "start_to_close_timeout": timedelta(seconds=30),
-                "schedule_to_close_timeout": timedelta(seconds=120),
+                # Generous schedule_to_close so the retry survives a coincident
+                # worker outage (the failure-recovery demo can have ~60s of
+                # worker downtime between SIGKILL and a fresh worker coming up).
+                "schedule_to_close_timeout": timedelta(seconds=300),
             }
             activity_options["retry_policy"] = RetryPolicy(
-                initial_interval=timedelta(seconds=16),
+                initial_interval=timedelta(seconds=4),
                 backoff_coefficient=1.0,
-                maximum_interval=timedelta(seconds=16),
+                maximum_interval=timedelta(seconds=4),
                 maximum_attempts=2,
             )
 
