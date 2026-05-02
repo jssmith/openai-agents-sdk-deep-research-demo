@@ -17,6 +17,7 @@ PROMPT = (
     "assistant.\n"
     "Generate the report directly without first writing a separate outline.\n"
     "The final output should be in markdown format. Aim for 450-650 words. Include:\n"
+    "- A single H1 (`# ...`) at the very top naming the topic in 4-8 words (no trailing period)\n"
     "- A short introduction with context\n"
     "- 3-5 sections with clear headings\n"
     "- Direct analysis and ranked takeaways where useful\n"
