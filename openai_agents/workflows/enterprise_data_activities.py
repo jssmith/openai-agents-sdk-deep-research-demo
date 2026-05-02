@@ -20,11 +20,11 @@ class DataWarehouseResult:
 
 
 def _demo_retry_failures() -> int:
-    return int(os.getenv("DEMO_DATA_WAREHOUSE_RETRY_FAILURES", "1") or "0")
+    return int(os.getenv("DEMO_DATA_WAREHOUSE_RETRY_FAILURES", "0") or "0")
 
 
 def _first_attempt_delay_seconds() -> float:
-    return float(os.getenv("DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS", "8") or "8")
+    return float(os.getenv("DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS", "1") or "1")
 
 
 @activity.defn(name="DataWarehouseLookup")

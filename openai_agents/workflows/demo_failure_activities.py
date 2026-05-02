@@ -17,7 +17,7 @@ def _search_branch_failure_attempts() -> int:
     return int(
         os.getenv(
             "DEMO_SEARCH_BRANCH_PROCESS_FAILURES",
-            os.getenv("DEMO_SEARCH_AGENT_PROCESS_CRASHES", "1"),
+            os.getenv("DEMO_SEARCH_AGENT_PROCESS_CRASHES", "0"),
         )
         or "0"
     )
