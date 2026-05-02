@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: bash scripts/demo-status <workflow-id>" >&2
+  echo "Env: DEMO_API_BASE_URL defaults to http://localhost:8234" >&2
+}
+
+workflow_id="${1:-}"
+if [[ -z "$workflow_id" || "${workflow_id}" == "-h" || "${workflow_id}" == "--help" ]]; then
+  usage
+  exit 2
+fi
+
+base_url="${DEMO_API_BASE_URL:-http://localhost:8234}"
+status_url="${base_url%/}/api/status/${workflow_id}"
+result_url="${base_url%/}/api/result/${workflow_id}"
+
+status_body="$(curl -sS "$status_url")"
+
+if command -v jq >/dev/null 2>&1; then
+  echo "Status:"
+  jq . <<<"$status_body"
+
+  status="$(jq -r '.status // empty' <<<"$status_body")"
+  if [[ "$status" == "completed" ]]; then
+    echo
+    echo "Result summary:"
+    curl -sS "$result_url" | jq '{short_summary, follow_up_questions, image_file_path}'
+  fi
+else
+  echo "$status_body"
+fi

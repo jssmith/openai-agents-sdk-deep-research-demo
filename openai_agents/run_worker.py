@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 from datetime import timedelta
 
 from dotenv import load_dotenv
@@ -12,6 +14,12 @@ from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
+from openai_agents.workflows.enterprise_data_activities import (
+    fetch_data_warehouse_context,
+)
+from openai_agents.workflows.demo_failure_activities import (
+    prepare_web_search_branch,
+)
 from openai_agents.workflows.image_generation_activity import generate_image
 from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchWorkflow,
@@ -29,6 +37,11 @@ logging.getLogger("openai.agents").setLevel(logging.CRITICAL)
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    pid_file = Path(os.getenv("DEMO_WORKER_PID_FILE", ".demo-worker.pid"))
+    pid_file.write_text(str(os.getpid()))
+    max_concurrent_activities = int(
+        os.getenv("DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES", "1")
+    )
 
     config = ClientConfig.load_client_connect_config()
     config.setdefault("target_host", "localhost:7233")
@@ -56,16 +69,22 @@ async def main():
         data_converter=pydantic_data_converter,
     )
 
-    print("Starting worker...")
+    print(
+        "Starting worker..."
+        f" max_concurrent_activities={max_concurrent_activities}"
+    )
     worker = Worker(
         client,
         task_queue="research-queue",
+        max_concurrent_activities=max_concurrent_activities,
         workflows=[
             InteractiveResearchWorkflow,
         ],
         activities=[
             generate_pdf,
             generate_image,
+            prepare_web_search_branch,
+            fetch_data_warehouse_context,
             process_clarification,
         ],
     )

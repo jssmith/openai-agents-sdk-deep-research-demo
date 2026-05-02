@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: bash scripts/start-worker <worker-number>" >&2
+  echo "Env: DEMO_ENV_FILE defaults to /Users/jssmith/t/aws-reinvent-25-demo/.env when present" >&2
+}
+
+worker_number="${1:-}"
+if [[ -z "$worker_number" || "$worker_number" == "-h" || "$worker_number" == "--help" ]]; then
+  usage
+  exit 2
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd -- "$script_dir/.." && pwd)"
+cd "$repo_dir"
+
+default_env_file="/Users/jssmith/t/aws-reinvent-25-demo/.env"
+env_file="${DEMO_ENV_FILE:-$default_env_file}"
+pid_file=".demo-worker-${worker_number}.pid"
+
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+export DEMO_WORKER_PID_FILE="$pid_file"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/aws-reinvent-demo-uv-cache}"
+
+echo "Starting worker ${worker_number}; pid file: ${pid_file}" >&2
+
+if [[ -f "$env_file" ]]; then
+  exec uv run --env-file "$env_file" openai_agents/run_worker.py
+fi
+
+echo "Env file not found at ${env_file}; starting without --env-file" >&2
+exec uv run openai_agents/run_worker.py

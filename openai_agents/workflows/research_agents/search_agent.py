@@ -20,6 +20,6 @@ def new_search_agent():
     return Agent(
         name="Search agent",
         instructions=INSTRUCTIONS,
-        tools=[WebSearchTool()],
+        tools=[WebSearchTool(search_context_size="low")],
         model_settings=ModelSettings(tool_choice="required"),
     )

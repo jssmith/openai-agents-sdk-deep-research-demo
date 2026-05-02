@@ -1,4 +1,5 @@
 import asyncio
+import os
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -47,12 +48,10 @@ async def process_clarification(
     )
 
     # Simulate cloud provider outages for the second-to-last question
-    is_second_last_question = (input.current_question_index + 2) == input.total_questions
-    if is_second_last_question:
+    demo_retry_failures = int(os.getenv("DEMO_CLARIFICATION_RETRY_FAILURES", "0") or "0")
+    if demo_retry_failures and (input.current_question_index + 2) == input.total_questions:
         attempt = activity.info().attempt
-        if attempt == 1:
-            raise ApplicationError("Simulated failure -- try again soon :)")
-        elif attempt <= 3:
+        if attempt <= demo_retry_failures:
             await asyncio.sleep(10)
             raise ApplicationError("Simulated failure -- try again soon :)")
 

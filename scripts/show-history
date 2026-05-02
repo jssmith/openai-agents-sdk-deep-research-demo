@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: bash scripts/show-history <workflow-id> [run-id]" >&2
+  echo "Env: TEMPORAL_ADDRESS defaults to localhost:7233; TEMPORAL_NAMESPACE defaults to default" >&2
+}
+
+workflow_id="${1:-}"
+run_id="${2:-}"
+
+if [[ -z "$workflow_id" || "$workflow_id" == "-h" || "$workflow_id" == "--help" ]]; then
+  usage
+  exit 2
+fi
+
+address="${TEMPORAL_ADDRESS:-localhost:7233}"
+namespace="${TEMPORAL_NAMESPACE:-default}"
+
+cmd=(
+  temporal workflow show
+  --workflow-id "$workflow_id"
+  --namespace "$namespace"
+  --address "$address"
+  --output json
+)
+
+if [[ -n "$run_id" ]]; then
+  cmd+=(--run-id "$run_id")
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+  "${cmd[@]}"
+  exit 0
+fi
+
+"${cmd[@]}" | jq -r '
+  (["event", "time", "type", "activity_or_scheduled_event", "activity_type", "attempt", "failure_or_timeout"] | @tsv),
+  (
+    (if type == "array" then .[] else .events[] end)
+    | select(
+        .activityTaskScheduledEventAttributes
+        or .activityTaskStartedEventAttributes
+        or .activityTaskCompletedEventAttributes
+        or .activityTaskFailedEventAttributes
+        or .activityTaskTimedOutEventAttributes
+        or .workflowExecutionCompletedEventAttributes
+        or .workflowExecutionFailedEventAttributes
+      )
+    | [
+        .eventId,
+        .eventTime,
+        .eventType,
+        (
+          .activityTaskScheduledEventAttributes.activityId
+          // .activityTaskStartedEventAttributes.scheduledEventId
+          // .activityTaskCompletedEventAttributes.scheduledEventId
+          // .activityTaskFailedEventAttributes.scheduledEventId
+          // .activityTaskTimedOutEventAttributes.scheduledEventId
+          // ""
+        ),
+        (.activityTaskScheduledEventAttributes.activityType.name // ""),
+        (.activityTaskStartedEventAttributes.attempt // ""),
+        (
+          .activityTaskStartedEventAttributes.lastFailure.message
+          // .activityTaskFailedEventAttributes.failure.message
+          // .activityTaskTimedOutEventAttributes.timeoutType
+          // .workflowExecutionFailedEventAttributes.failure.message
+          // ""
+        )
+      ]
+    | @tsv
+  )
+'

@@ -130,6 +130,8 @@
         let currentQuestionIndex = 0;
         let spinnerStartTime = null;
         let retryCheckInterval = null;
+        let lastRenderedQuestionIndex = null;
+        const ACTIVE_WORKFLOW_KEY = 'activeResearchWorkflowId';
 
         // Add message to chat with animation
         function addMessage(text, isUser = false) {
@@ -145,6 +147,34 @@
             
             // Scroll to bottom
             chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function resetChat() {
+            chatContainer.innerHTML = '';
+        }
+
+        function renderTranscript(status) {
+            resetChat();
+            addMessage('Hey there, what would you like to research?');
+
+            if (status.original_query) {
+                addMessage(status.original_query, true);
+            }
+
+            const questions = status.clarification_questions || [];
+            const responses = status.clarification_responses || {};
+
+            questions.forEach((question, index) => {
+                const answer = responses[`question_${index}`];
+                if (answer || index <= status.current_question_index) {
+                    addMessage(question);
+                }
+                if (answer) {
+                    addMessage(answer, true);
+                }
+            });
+
+            lastRenderedQuestionIndex = status.current_question_index;
         }
 
         // Show/hide spinner
@@ -185,6 +215,7 @@
                     // First submission - start new research workflow
                     const result = await client.startResearch(query);
                     workflowId = result.workflow_id;
+                    localStorage.setItem(ACTIVE_WORKFLOW_KEY, workflowId);
                 } else {
                     // Subsequent submissions - answer clarification question
                     await client.submitAnswer(query, workflowId, currentQuestionIndex);
@@ -212,7 +243,10 @@
 
                     // Hide spinner, show clarification question
                     showSpinner(false);
-                    addMessage(status.current_question);
+                    if (lastRenderedQuestionIndex !== currentQuestionIndex) {
+                        addMessage(status.current_question);
+                        lastRenderedQuestionIndex = currentQuestionIndex;
+                    }
                 } else if (status.status === 'researching') {
                     // Switch to researching text, reset retrying state
                     spinnerContainer.classList.remove('retrying');
@@ -229,10 +263,11 @@
                     // Store result in sessionStorage for success page
                     sessionStorage.setItem('researchResult', JSON.stringify(result));
                     sessionStorage.setItem('workflowId', workflowId);
+                    localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
                     
                     console.log("redirecting...");
                     // Redirect to success page
-                    window.location.href = 'success';
+                    window.location.href = `success?wf=${encodeURIComponent(workflowId)}`;
                     
                 } else {
                     // Other states - keep polling
@@ -251,6 +286,44 @@
                 handleSubmit();
             }
         });
+
+        async function resumeActiveWorkflow() {
+            const activeWorkflowId = localStorage.getItem(ACTIVE_WORKFLOW_KEY);
+            if (!activeWorkflowId) return;
+
+            workflowId = activeWorkflowId;
+            client.workflowId = activeWorkflowId;
+
+            try {
+                const status = await client.getStatus(workflowId);
+                currentQuestionIndex = status.current_question_index || 0;
+                renderTranscript(status);
+
+                if (status.status === 'completed') {
+                    showSpinner(false);
+                    const result = await client.getResult(workflowId);
+                    sessionStorage.setItem('researchResult', JSON.stringify(result));
+                    sessionStorage.setItem('workflowId', workflowId);
+                    localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
+                    window.location.href = `success?wf=${encodeURIComponent(workflowId)}`;
+                } else if (status.status === 'researching' || status.status === 'pending') {
+                    showSpinner(true);
+                    document.querySelector('.researching-text').textContent =
+                        status.status === 'researching' ? 'Researching...' : 'Thinking...';
+                    pollStatus();
+                }
+            } catch (error) {
+                console.error('Resume error:', error);
+                localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
+                workflowId = null;
+                client.workflowId = null;
+                currentQuestionIndex = 0;
+                lastRenderedQuestionIndex = null;
+                showSpinner(false);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', resumeActiveWorkflow);
     </script>
 </body>
 </html>

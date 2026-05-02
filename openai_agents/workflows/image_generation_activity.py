@@ -1,24 +1,27 @@
 import base64
+import os
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Literal, Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 from PIL import Image
 from pydantic import BaseModel
 from temporalio import activity
 
 ImageSize = Literal["1024x1024", "1536x1024", "1024x1536", "auto"]
 ImageOutputFormat = Literal["png", "jpeg", "webp"]
+ImageQuality = Literal["low", "medium", "high", "auto"]
 
 
 class ImageStylingOptions(BaseModel):
     """Styling options for image generation"""
 
     size: ImageSize = "1024x1024"
-    output_format: ImageOutputFormat = "png"
-    output_compression: Optional[int] = None  # 0-100 for JPEG/WEBP
-    resize_width: Optional[int] = 600  # Resize for optimal PDF embedding
+    quality: ImageQuality = "low"
+    output_format: ImageOutputFormat = "jpeg"
+    output_compression: Optional[int] = 65  # 0-100 for JPEG/WEBP
+    resize_width: Optional[int] = 640  # Resize for report/PDF embedding
 
 
 @dataclass
@@ -47,22 +50,24 @@ async def generate_image(
         ImageGenerationResult with image bytes and success status
     """
     try:
-        client = OpenAI()
-
         # Default styling options
         if styling_options is None:
             styling_options = ImageStylingOptions()
 
-        # Generate image via OpenAI API
+        # Generate image via OpenAI API. Pin the default so demo output does not
+        # move with the ChatGPT image alias. Override with OPENAI_IMAGE_MODEL.
+        image_model = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-2-2026-04-21")
+        activity.logger.info(f"Generating image with model={image_model}")
         no_text_suffix = " Do not include any text, words, labels, numbers, or writing in the image."
-        result = client.images.generate(
-            model="gpt-image-1",
-            prompt=prompt + no_text_suffix,
-            quality="low",  # hardcoded low quality for speed/efficiency
-            size=styling_options.size,
-            output_format=styling_options.output_format,
-            output_compression=styling_options.output_compression,
-        )
+        async with AsyncOpenAI() as client:
+            result = await client.images.generate(
+                model=image_model,
+                prompt=prompt + no_text_suffix,
+                quality=styling_options.quality,
+                size=styling_options.size,
+                output_format=styling_options.output_format,
+                output_compression=styling_options.output_compression,
+            )
 
         if not result.data:
             raise Exception("No image data returned from OpenAI API")

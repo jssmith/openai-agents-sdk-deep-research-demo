@@ -12,12 +12,14 @@ Environment Variables:
 """
 
 import os
+import signal
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,6 +41,8 @@ from openai_agents.workflows.research_agents.research_models import (
 load_dotenv()
 
 TEMPORAL_TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "research-queue")
+DEMO_WORKER_PID_FILE = Path(os.getenv("DEMO_WORKER_PID_FILE", ".demo-worker.pid"))
+DEMO_CRASH_AFTER_ANSWERS = int(os.getenv("DEMO_CRASH_AFTER_ANSWERS", "0") or "0")
 
 
 # ============================================
@@ -113,6 +117,23 @@ class ResearchResultResponse(BaseModel):
     markdown_report: str
     short_summary: str
     follow_up_questions: List[str]
+
+
+def kill_worker_from_pid_file(delay_seconds: float = 0.5) -> None:
+    """Demo-only crash hook: kill the worker after a durable answer update."""
+    time.sleep(delay_seconds)
+    try:
+        pid = int(DEMO_WORKER_PID_FILE.read_text().strip())
+    except (OSError, ValueError):
+        print(f"Demo crash requested, but no worker pid found at {DEMO_WORKER_PID_FILE}")
+        return
+
+    if pid == os.getpid():
+        print("Refusing to kill backend process as worker")
+        return
+
+    print(f"Demo crash: killing worker process {pid}")
+    os.kill(pid, signal.SIGKILL)
 
 
 # ============================================
@@ -200,6 +221,7 @@ async def get_status(workflow_id: str):
         "workflow_id": workflow_id,
         "status": status.status,
         "original_query": status.original_query,
+        "clarification_questions": status.clarification_questions or [],
         "current_question": status.current_question,
         "current_question_index": status.current_question_index,
         "total_questions": len(status.clarification_questions or []),
@@ -214,7 +236,10 @@ async def get_status(workflow_id: str):
 
 @app.post("/api/answer/{workflow_id}/{current_question_index}")
 async def submit_answer(
-    workflow_id: str, current_question_index: int, request: AnswerRequest
+    workflow_id: str,
+    current_question_index: int,
+    request: AnswerRequest,
+    background_tasks: BackgroundTasks,
 ):
     """
     Submit an answer to a clarification question.
@@ -235,6 +260,13 @@ async def submit_answer(
     )
 
     status = await handle.query(InteractiveResearchWorkflow.get_status)
+
+    if (
+        DEMO_CRASH_AFTER_ANSWERS
+        and status.current_question_index == DEMO_CRASH_AFTER_ANSWERS
+        and status.status != "completed"
+    ):
+        background_tasks.add_task(kill_worker_from_pid_file)
 
     return {
         "status": "accepted",

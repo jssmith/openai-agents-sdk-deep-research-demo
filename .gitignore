@@ -131,3 +131,4 @@ Thumbs.db
 pdf_output/
 temp_images/
 *.pdf
+.demo-worker*.pid

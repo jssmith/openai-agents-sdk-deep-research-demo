@@ -148,13 +148,12 @@
 
         // Load research result from sessionStorage
         async function loadResearchResult() {
-            let workflowId = sessionStorage.getItem('workflowId');
-            let resultJson = sessionStorage.getItem('researchResult');
+            const params = new URLSearchParams(window.location.search);
+            const workflowIdFromUrl = params.get("wf");
+            let workflowId = workflowIdFromUrl || sessionStorage.getItem('workflowId');
+            let resultJson = workflowIdFromUrl ? null : sessionStorage.getItem('researchResult');
 
             if (!resultJson) {
-                const params = new URLSearchParams(window.location.search);
-                workflowId = params.get("wf");
-
                 if (!workflowId) {
                     console.log('No research result found');
                     return;
@@ -163,8 +162,8 @@
                 const API_BASE_URL = 'http://localhost:8234';
                 const client = new ResearchClient(API_BASE_URL);
 
-                result = await client.getResult(workflowId);
-                resultJson = JSON.stringify(result)
+                const result = await client.getResult(workflowId);
+                resultJson = JSON.stringify(result);
 
                 if (!resultJson) {
                     console.log('No research result found');
@@ -200,7 +199,8 @@
         // Markdown to HTML using marked library with heading IDs
         marked.use(markedGfmHeadingId.gfmHeadingId());
         function convertMarkdownToHTML(markdown) {
-            return marked.parse(markdown);
+            const normalizedMarkdown = markdown.replace(/~(?=\d)/g, 'approximately ');
+            return marked.parse(normalizedMarkdown);
         }
 
         // Download markdown as file

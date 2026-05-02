@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
+from temporalio.common import RetryPolicy
 from temporalio import workflow
 
 # Load environment variables
@@ -44,6 +46,15 @@ with workflow.unsafe.imports_passed_through():
     from openai_agents.workflows.research_agents.writer_agent import (
         ReportData,
         new_writer_agent,
+    )
+    from openai_agents.workflows.demo_failure_activities import (
+        SearchBranchRequest,
+        prepare_web_search_branch,
+    )
+    from openai_agents.workflows.enterprise_data_activities import (
+        DataWarehouseRequest,
+        DataWarehouseResult,
+        fetch_data_warehouse_context,
     )
 
 
@@ -91,24 +102,7 @@ class InteractiveResearchManager:
         """Original direct research flow with parallel image generation"""
         trace_id = gen_trace_id()
         with trace("Research trace", trace_id=trace_id):
-            # Start image generation immediately to run in parallel with entire research pipeline
-            workflow.logger.info(
-                "Starting image generation in parallel with research pipeline"
-            )
-            image_task = asyncio.create_task(self._generate_research_image(query))
-
-            # Perform research pipeline (planning, searching, writing)
-            search_plan = await self._plan_searches(query)
-            search_results = await self._perform_searches(search_plan)
-            report = await self._write_report(query, search_results)
-
-            # Wait for image generation to complete (if not already done)
-            workflow.logger.info("Waiting for image generation to complete")
-            image_path, image_description = await image_task
-
-            # Store image data for PDF generation
-            self.research_image_path = image_path
-            self.research_image_description = image_description
+            report = await self._run_research_pipeline_with_image(query)
 
         return report
 
@@ -131,25 +125,7 @@ class InteractiveResearchManager:
                     needs_clarifications=True, questions=clarifications.questions
                 )
             else:
-                # No clarifications needed, continue with research
-                # Start image generation immediately to run in parallel with entire research pipeline
-                workflow.logger.info(
-                    "Starting image generation in parallel with research pipeline"
-                )
-                image_task = asyncio.create_task(self._generate_research_image(query))
-
-                # Perform research pipeline (planning, searching, writing)
-                search_plan = await self._plan_searches(query)
-                search_results = await self._perform_searches(search_plan)
-                report = await self._write_report(query, search_results)
-
-                # Wait for image generation to complete (if not already done)
-                workflow.logger.info("Waiting for image generation to complete")
-                image_path, image_description = await image_task
-
-                # Store image data for PDF generation
-                self.research_image_path = image_path
-                self.research_image_description = image_description
+                report = await self._run_research_pipeline_with_image(query)
 
                 return ClarificationResult(
                     needs_clarifications=False,
@@ -166,26 +142,7 @@ class InteractiveResearchManager:
             # Enrich the query with clarification responses
             enriched_query = self._enrich_query(original_query, questions, responses)
 
-            # Start image generation immediately to run in parallel with entire research pipeline
-            workflow.logger.info(
-                "Starting image generation in parallel with research pipeline"
-            )
-            image_task = asyncio.create_task(
-                self._generate_research_image(enriched_query)
-            )
-
-            # Perform research pipeline (planning, searching, writing)
-            search_plan = await self._plan_searches(enriched_query)
-            search_results = await self._perform_searches(search_plan)
-            report = await self._write_report(enriched_query, search_results)
-
-            # Wait for image generation to complete (if not already done)
-            workflow.logger.info("Waiting for image generation to complete")
-            image_path, image_description = await image_task
-
-            # Store image data for PDF generation
-            self.research_image_path = image_path
-            self.research_image_description = image_description
+            report = await self._run_research_pipeline_with_image(enriched_query)
 
             return report
 
@@ -240,11 +197,33 @@ class InteractiveResearchManager:
         )
         return result.final_output_as(WebSearchPlan)
 
+    async def _run_research_pipeline_with_image(self, query: str) -> ReportData:
+        search_plan = await self._plan_searches(query)
+        search_results = await self._perform_searches(search_plan)
+        workflow.logger.info(
+            "Starting image generation in parallel with remaining research pipeline"
+        )
+        image_task = asyncio.create_task(self._generate_research_image(query))
+
+        search_results.extend(await self._fetch_data_warehouse_context(query))
+        report = await self._write_report(query, search_results)
+
+        workflow.logger.info("Waiting for image generation to complete")
+        image_path, image_description = await image_task
+
+        self.research_image_path = image_path
+        self.research_image_description = image_description
+
+        return report
+
     async def _perform_searches(self, search_plan: WebSearchPlan) -> list[str]:
         with custom_span("Search the web"):
             num_completed = 0
             tasks = [
-                asyncio.create_task(self._search(item)) for item in search_plan.searches
+                asyncio.create_task(
+                    self._search(item, item_index=index, total_items=len(search_plan.searches))
+                )
+                for index, item in enumerate(search_plan.searches)
             ]
             results = []
             for task in workflow.as_completed(tasks):
@@ -254,11 +233,67 @@ class InteractiveResearchManager:
                 num_completed += 1
             return results
 
-    async def _search(self, item: WebSearchItem) -> str | None:
+    async def _prepare_web_search_branch(
+        self, item: WebSearchItem, item_index: int, total_items: int
+    ) -> None:
+        await workflow.execute_activity(
+            prepare_web_search_branch,
+            SearchBranchRequest(
+                query_count=total_items,
+                search_index=item_index,
+                search_query=item.query,
+            ),
+            start_to_close_timeout=timedelta(seconds=8),
+            schedule_to_close_timeout=timedelta(seconds=120),
+            retry_policy=RetryPolicy(
+                initial_interval=timedelta(seconds=8),
+                backoff_coefficient=1.0,
+                maximum_interval=timedelta(seconds=8),
+                maximum_attempts=2,
+            ),
+        )
+
+    async def _fetch_data_warehouse_context(self, query: str) -> list[str]:
+        with custom_span("Fetch proprietary data warehouse context"):
+            request = DataWarehouseRequest(query=query)
+            activity_options = {
+                "start_to_close_timeout": timedelta(seconds=30),
+                "schedule_to_close_timeout": timedelta(seconds=120),
+            }
+            activity_options["retry_policy"] = RetryPolicy(
+                initial_interval=timedelta(seconds=16),
+                backoff_coefficient=1.0,
+                maximum_interval=timedelta(seconds=16),
+                maximum_attempts=2,
+            )
+
+            try:
+                result: DataWarehouseResult = await workflow.execute_activity(
+                    fetch_data_warehouse_context,
+                    request,
+                    **activity_options,
+                )
+            except Exception as e:
+                workflow.logger.warning(f"Data warehouse lookup failed: {e}")
+                return []
+
+            return [
+                "Proprietary data warehouse context "
+                f"({result.source}, units={result.units_consumed}, "
+                f"estimated_cost=${result.estimated_cost_usd:.2f}): "
+                f"{result.summary}"
+            ]
+
+    async def _search(
+        self, item: WebSearchItem, item_index: int, total_items: int
+    ) -> str | None:
         input_str: str = (
             f"Search term: {item.query}\nReason for searching: {item.reason}"
         )
         try:
+            if item_index == 0:
+                await self._prepare_web_search_branch(item, item_index, total_items)
+
             result = await Runner.run(
                 self.search_agent,
                 input_str,

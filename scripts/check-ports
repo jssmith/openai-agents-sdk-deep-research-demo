@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ports=("$@")
+if [[ "${#ports[@]}" -eq 0 ]]; then
+  ports=(7233 8233 8234)
+fi
+
+for port in "${ports[@]}"; do
+  echo "Port ${port}:"
+  if ! lsof -iTCP:"$port" -sTCP:LISTEN -n -P; then
+    echo "  no listener"
+  fi
+  echo
+done
