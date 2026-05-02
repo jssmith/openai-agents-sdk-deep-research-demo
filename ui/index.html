@@ -157,6 +157,23 @@
         const renderedStatusMessages = new Set();
         const ACTIVE_WORKFLOW_KEY = 'activeResearchWorkflowId';
         const DEMO_MODE = new URLSearchParams(window.location.search).get('demo');
+        const WORKFLOW_QUERY_PARAM = 'wf';
+
+        function workflowIdFromURL() {
+            const id = new URLSearchParams(window.location.search).get(WORKFLOW_QUERY_PARAM);
+            return id && id.trim() ? id.trim() : null;
+        }
+
+        function setWorkflowURL(id) {
+            const url = new URL(window.location.href);
+            if (id) {
+                url.searchParams.set(WORKFLOW_QUERY_PARAM, id);
+            } else {
+                url.searchParams.delete(WORKFLOW_QUERY_PARAM);
+            }
+            // pushState avoids a reload; relative path keeps origin and other params intact.
+            history.pushState({ workflowId: id || null }, '', url.pathname + url.search);
+        }
         const AGENT_STATUS_MESSAGES = [
             {
                 id: 'planning',
@@ -449,6 +466,7 @@
             spinnerContainer.classList.remove('retrying');
             showSpinner(false);
             localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
+            setWorkflowURL(null);
             resetChat();
             addMessage('What would you like me to research?');
             setAgentStatus('Ready');
@@ -532,6 +550,7 @@
                     const result = await client.startResearch(query);
                     workflowId = result.workflow_id;
                     localStorage.setItem(ACTIVE_WORKFLOW_KEY, workflowId);
+                    setWorkflowURL(workflowId);
                 } else {
                     // Subsequent submissions - answer clarification question
                     await client.submitAnswer(query, workflowId, currentQuestionIndex);
@@ -574,12 +593,14 @@
                     // slideIn animation and made the row blink.
                     if (!researchingStarted) {
                         researchingStarted = true;
-                        spinnerContainer.classList.remove('retrying');
                         const txt = document.querySelector('.researching-text');
                         if (txt.textContent !== 'Agent is researching...') {
                             txt.textContent = 'Agent is researching...';
                         }
-                        clearInterval(retryCheckInterval);
+                        // Note: we deliberately leave retryCheckInterval running. After
+                        // ~5s of continuous spinner, it flips the row amber with
+                        // "Still researching..." — a generic "this is taking a while"
+                        // signal that also covers the worker-crash recovery moment.
                         startAgentStatusMessages();
                         keepSpinnerAtBottom();
                         chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -623,11 +644,18 @@
         resetButton.addEventListener('click', startFreshChat);
 
         async function resumeActiveWorkflow() {
-            const activeWorkflowId = localStorage.getItem(ACTIVE_WORKFLOW_KEY);
+            // URL ?wf=<id> wins; localStorage is the legacy/in-tab fallback.
+            const activeWorkflowId = workflowIdFromURL() || localStorage.getItem(ACTIVE_WORKFLOW_KEY);
             if (!activeWorkflowId) return;
 
             workflowId = activeWorkflowId;
             client.workflowId = activeWorkflowId;
+            // Sync state across both sources so a hand-typed URL also survives a reload
+            // without the URL, and a localStorage-resumed run gets a copyable URL.
+            localStorage.setItem(ACTIVE_WORKFLOW_KEY, activeWorkflowId);
+            if (workflowIdFromURL() !== activeWorkflowId) {
+                setWorkflowURL(activeWorkflowId);
+            }
 
             try {
                 const status = await client.getStatus(workflowId);
@@ -656,6 +684,7 @@
             } catch (error) {
                 console.error('Resume error:', error);
                 localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
+                setWorkflowURL(null);
                 workflowId = null;
                 client.workflowId = null;
                 currentQuestionIndex = 0;
