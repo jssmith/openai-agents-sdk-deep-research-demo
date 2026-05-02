@@ -1,4 +1,5 @@
 import base64
+import mimetypes
 import os
 from dataclasses import dataclass
 from io import BytesIO
@@ -50,6 +51,46 @@ async def generate_image(
         ImageGenerationResult with image bytes and success status
     """
     try:
+        cached_image_path = os.getenv("DEMO_RESEARCH_IMAGE_PATH", "").strip()
+        if cached_image_path:
+            from pathlib import Path as _Path
+
+            temp_dir = _Path("temp_images").resolve()
+            requested = _Path(cached_image_path)
+            abs_requested = (
+                requested if requested.is_absolute() else _Path.cwd() / requested
+            ).resolve()
+
+            try:
+                rel = abs_requested.relative_to(temp_dir)
+                relative_path = f"temp_images/{rel.as_posix()}"
+            except ValueError:
+                relative_path = None
+
+            if relative_path and abs_requested.is_file():
+                mime_type = (
+                    mimetypes.guess_type(str(abs_requested))[0] or "image/jpeg"
+                )
+                activity.logger.info(
+                    f"Using cached demo research image: {relative_path}"
+                )
+                return ImageGenerationResult(
+                    image_file_path=relative_path,
+                    mime_type=mime_type,
+                    success=True,
+                )
+            if not relative_path:
+                activity.logger.warning(
+                    "DEMO_RESEARCH_IMAGE_PATH must point to a file under "
+                    f"temp_images/; got {cached_image_path}. "
+                    "Falling back to live image generation."
+                )
+            else:
+                activity.logger.warning(
+                    f"DEMO_RESEARCH_IMAGE_PATH does not exist: {cached_image_path}; "
+                    "falling back to live image generation."
+                )
+
         # Default styling options
         if styling_options is None:
             styling_options = ImageStylingOptions()
