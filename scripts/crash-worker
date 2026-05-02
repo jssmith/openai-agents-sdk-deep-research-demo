@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Demo-only: SIGKILL the running clean-preset worker. Targets the pid stored in
+# DEMO_WORKER_PID_FILE (defaults to .demo-worker-clean.pid, matching what
+# scripts/start-clean-worker writes). Use this during the failure-recovery moment
+# of the talk to demonstrate Temporal resuming work after a real process death.
+#
+# The worker activity also has an auto-kill timer (DEMO_SEARCH_BRANCH_PROCESS_FAILURES=1
+# fires SIGKILL after DEMO_SEARCH_BRANCH_FAILURE_AFTER_SECONDS seconds). Running this
+# script before the timer fires gives a visible cause for the audience; if the
+# presenter is too slow, the auto-kill is the safety net.
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd -- "$script_dir/.." && pwd)"
+cd "$repo_dir"
+
+# Optional first arg picks an instance to kill, matching scripts/start-clean-worker:
+#   crash-worker          → .demo-worker-clean.pid
+#   crash-worker 2        → .demo-worker-clean-2.pid
+instance="${1:-}"
+if [[ -n "$instance" ]]; then
+  default_pid_file=".demo-worker-clean-${instance}.pid"
+else
+  default_pid_file=".demo-worker-clean.pid"
+fi
+
+pid_file="${DEMO_WORKER_PID_FILE:-${default_pid_file}}"
+
+if [[ ! -f "$pid_file" ]]; then
+  echo "no pid file at ${pid_file}; is the worker running?" >&2
+  exit 1
+fi
+
+pid="$(tr -d '[:space:]' <"$pid_file")"
+if [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ ]]; then
+  echo "${pid_file}: invalid pid '${pid}'" >&2
+  exit 1
+fi
+
+if ! kill -0 "$pid" >/dev/null 2>&1; then
+  echo "${pid_file}: pid ${pid} is not running" >&2
+  exit 1
+fi
+
+command_line="$(ps -p "$pid" -o command= || true)"
+if [[ "$command_line" != *"openai_agents/run_worker.py"* ]]; then
+  echo "${pid_file}: pid ${pid} does not look like a deep-research worker; refusing" >&2
+  echo "  ${command_line}" >&2
+  exit 1
+fi
+
+echo "crashing worker pid ${pid}" >&2
+kill -9 "$pid"
