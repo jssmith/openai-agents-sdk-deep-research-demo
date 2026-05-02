@@ -3,46 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Build Durable Agents</title>
+    <title>Deep Research Agent</title>
     <link rel="stylesheet" href="static/src/css/styles.css">
 </head>
-<body>
+<body class="chat-page">
     <canvas id="gradient-canvas"></canvas>
     <div class="full-overlay"></div>
 
     <div class="content-section">
-        <!-- Temporal Logo -->
-        <svg class="temporal-logo" width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M32.4154 15.5846C31.2802 7.09512 28.4175 0 24 0C19.5949 0 16.7198 7.09512 15.5846 15.5846C7.09511 16.7198 0 19.5825 0 24C0 28.4051 7.09511 31.2802 15.5846 32.4154C16.7198 40.9049 19.5825 48 24 48C28.4051 48 31.2802 40.9049 32.4154 32.4154C40.9049 31.2802 48 28.4175 48 24C48 19.5825 40.9049 16.7075 32.4154 15.5846ZM15.3131 29.9229C7.18149 28.7506 2.43084 26.0607 2.43084 23.9877C2.43084 21.9147 7.16915 19.2247 15.3131 18.0524C15.128 20.0144 15.0416 22.0134 15.0416 23.9877C15.0416 25.962 15.128 27.9733 15.3131 29.9229ZM24 2.41851C26.073 2.41851 28.763 7.15682 29.9352 15.3008C27.9733 15.1157 25.9743 15.0293 24 15.0293C22.0257 15.0293 20.0267 15.128 18.0648 15.3008C19.237 7.16916 21.927 2.41851 24 2.41851ZM32.6869 29.9229C32.292 29.9846 30.6386 30.1697 30.2314 30.219C30.1943 30.6386 29.9969 32.2797 29.9352 32.6746C28.763 40.8062 26.073 45.5568 24 45.5568C21.927 45.5568 19.237 40.8185 18.0648 32.6746C18.0031 32.2797 17.818 30.6262 17.7686 30.219C17.5835 28.2941 17.4602 26.2211 17.4602 23.9877C17.4602 21.7542 17.5712 19.6936 17.7686 17.7563C19.6936 17.5712 21.7666 17.4478 24 17.4478C26.2334 17.4478 28.2941 17.5589 30.2314 17.7563C30.6509 17.7933 32.292 17.9907 32.6869 18.0524C40.8185 19.2247 45.5691 21.9147 45.5691 23.9877C45.5691 26.0607 40.8185 28.7506 32.6869 29.9229Z" fill="#F8FAFC"/>
-        </svg>
-        
-        <!-- Main Heading -->
-        <h1 class="main-heading">Build Durable Agents</h1>
-        <p class="subtitle">Powered by Temporal</p>
+        <header class="app-header">
+            <h1 class="main-heading">Deep Research Agent</h1>
+            <div class="app-header-actions">
+                <p class="agent-status" id="agentStatus">
+                    <span class="agent-status-dot"></span>
+                    <span>Ready</span>
+                </p>
+                <button
+                    type="button"
+                    class="reset-button"
+                    id="resetButton"
+                    aria-label="Start a new research request"
+                    title="Start a new research request"
+                >
+                    <img src="static/public/icons/start-over.svg" alt="" aria-hidden="true">
+                </button>
+            </div>
+        </header>
 
-        <!-- Chat Container -->
         <div class="chat-container" id="chatContainer">
-            <!-- Bot Message -->
             <div class="message bot">
                 <div class="message-bubble bot">
-                    Hey there, what would you like to research?
+                    What would you like me to research?
                 </div>
             </div>
-        </div>
 
-        <!-- Spinner (hidden by default) -->
-        <div class="spinner-container" id="spinnerContainer" style="display: none;">
-            <svg class="spinner" xmlns="http://www.w3.org/2000/svg" width="35" height="35" viewBox="0 0 35 35" fill="none">
-                <g clip-path="url(#clip0_18_726)">
-                    <path d="M8.34424 21.388C7.50043 19.4773 7.28314 17.3486 7.72353 15.3068C8.16393 13.2651 9.23938 11.4151 10.7958 10.0222C12.3522 8.6292 14.3096 7.76469 16.3875 7.55256C18.4654 7.34042 20.5571 7.79155 22.3629 8.84127C24.1686 9.891 25.5957 11.4854 26.4396 13.3961C27.2835 15.3067 27.5009 17.4355 27.0606 19.4773C26.6203 21.519 25.5449 23.369 23.9886 24.762C22.4323 26.1551 20.4749 27.0197 18.397 27.2319" stroke="#00C950" stroke-width="2.19796" stroke-linecap="round" stroke-linejoin="round"/>
-                </g>
-                <defs>
-                    <clipPath id="clip0_18_726">
-                        <rect width="26.3755" height="26.3755" fill="white" transform="translate(34.7835 24.127) rotate(156.169)"/>
-                    </clipPath>
-                </defs>
-            </svg>
-            <span class="researching-text">Researching...</span>
+            <div class="message bot spinner-message" id="spinnerContainer" style="display: none;">
+                <div class="agent-status-message agent-thinking-message">
+                    <svg class="spinner" xmlns="http://www.w3.org/2000/svg" width="35" height="35" viewBox="0 0 35 35" fill="none">
+                        <g clip-path="url(#clip0_18_726)">
+                            <path d="M8.34424 21.388C7.50043 19.4773 7.28314 17.3486 7.72353 15.3068C8.16393 13.2651 9.23938 11.4151 10.7958 10.0222C12.3522 8.6292 14.3096 7.76469 16.3875 7.55256C18.4654 7.34042 20.5571 7.79155 22.3629 8.84127C24.1686 9.891 25.5957 11.4854 26.4396 13.3961C27.2835 15.3067 27.5009 17.4355 27.0606 19.4773C26.6203 21.519 25.5449 23.369 23.9886 24.762C22.4323 26.1551 20.4749 27.0197 18.397 27.2319" stroke="#00C950" stroke-width="2.19796" stroke-linecap="round" stroke-linejoin="round"/>
+                        </g>
+                        <defs>
+                            <clipPath id="clip0_18_726">
+                                <rect width="26.3755" height="26.3755" fill="white" transform="translate(34.7835 24.127) rotate(156.169)"/>
+                            </clipPath>
+                        </defs>
+                    </svg>
+                    <span>
+                        <strong class="researching-text">Agent is thinking...</strong>
+                    </span>
+                </div>
+            </div>
         </div>
 
         <!-- Input Container -->
@@ -125,13 +136,107 @@
         const userInput = document.querySelector('.user-input');
         const submitButton = document.querySelector('.submit-button');
         const spinnerContainer = document.getElementById('spinnerContainer');
+        const agentStatus = document.getElementById('agentStatus');
+        const resetButton = document.getElementById('resetButton');
+        const INITIAL_PLACEHOLDER = userInput.placeholder;
+        const POST_COMPLETE_PLACEHOLDER = 'Start a new research request...';
         
         let workflowId = null;
         let currentQuestionIndex = 0;
         let spinnerStartTime = null;
         let retryCheckInterval = null;
         let lastRenderedQuestionIndex = null;
+        let researchComplete = false;
+        let researchingStarted = false;
+        let reportRendered = false;
+        let statusTimers = [];
+        // Generation token: each new workflow run / reset bumps this, and any in-flight
+        // pollStatus loop bails if its captured generation no longer matches. This stops
+        // orphan poll loops from racing a fresh request after the user clicks reset.
+        let pollGeneration = 0;
+        const renderedStatusMessages = new Set();
         const ACTIVE_WORKFLOW_KEY = 'activeResearchWorkflowId';
+        const DEMO_MODE = new URLSearchParams(window.location.search).get('demo');
+        const AGENT_STATUS_MESSAGES = [
+            {
+                id: 'planning',
+                title: 'Planning the research scope',
+                detail: 'Clarifications saved. Starting the agent run.',
+            },
+            {
+                id: 'collecting',
+                title: 'Collecting neighborhood indicators',
+                detail: 'Foot traffic, business activity, and transit access.',
+            },
+            {
+                id: 'writing',
+                title: 'Writing the final report',
+                detail: 'Summary, visualization, and markdown are being assembled.',
+            },
+        ];
+
+        function setAgentStatus(text, complete = false) {
+            agentStatus.innerHTML = `
+                <span class="agent-status-dot${complete ? ' complete' : ''}"></span>
+                <span>${text}</span>
+            `;
+        }
+
+        function escapeHTML(value = '') {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function convertMarkdownToHTML(markdown = '') {
+            const lines = markdown.split(/\r?\n/);
+            const html = [];
+            let listOpen = false;
+
+            lines.forEach((line) => {
+                const trimmed = line.trim();
+
+                if (!trimmed) {
+                    if (listOpen) {
+                        html.push('</ul>');
+                        listOpen = false;
+                    }
+                    return;
+                }
+
+                if (trimmed.startsWith('# ')) {
+                    if (listOpen) html.push('</ul>');
+                    listOpen = false;
+                    html.push(`<h1>${escapeHTML(trimmed.slice(2))}</h1>`);
+                } else if (trimmed.startsWith('## ')) {
+                    if (listOpen) html.push('</ul>');
+                    listOpen = false;
+                    html.push(`<h2>${escapeHTML(trimmed.slice(3))}</h2>`);
+                } else if (trimmed.startsWith('### ')) {
+                    if (listOpen) html.push('</ul>');
+                    listOpen = false;
+                    html.push(`<h3>${escapeHTML(trimmed.slice(4))}</h3>`);
+                } else if (/^[-*]\s+/.test(trimmed)) {
+                    if (!listOpen) {
+                        html.push('<ul>');
+                        listOpen = true;
+                    }
+                    html.push(`<li>${escapeHTML(trimmed.replace(/^[-*]\s+/, ''))}</li>`);
+                } else {
+                    if (listOpen) {
+                        html.push('</ul>');
+                        listOpen = false;
+                    }
+                    html.push(`<p>${escapeHTML(trimmed)}</p>`);
+                }
+            });
+
+            if (listOpen) html.push('</ul>');
+            return html.join('');
+        }
 
         // Add message to chat with animation
         function addMessage(text, isUser = false) {
@@ -149,13 +254,212 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
+        function addStatusMessage(statusId) {
+            if (renderedStatusMessages.has(statusId)) return;
+
+            const status = AGENT_STATUS_MESSAGES.find((item) => item.id === statusId);
+            if (!status) return;
+
+            renderedStatusMessages.add(statusId);
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message bot';
+
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'agent-status-message';
+            statusDiv.innerHTML = `
+                <span class="agent-status-icon">✓</span>
+                <span>
+                    <strong>${escapeHTML(status.title)}</strong>
+                    <span class="agent-status-detail">${escapeHTML(status.detail)}</span>
+                </span>
+            `;
+
+            messageDiv.appendChild(statusDiv);
+            chatContainer.appendChild(messageDiv);
+            keepSpinnerAtBottom();
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function keepSpinnerAtBottom() {
+            if (spinnerContainer.style.display !== 'none') {
+                chatContainer.appendChild(spinnerContainer);
+            }
+        }
+
+        function clearStatusTimers() {
+            statusTimers.forEach((timer) => clearTimeout(timer));
+            statusTimers = [];
+        }
+
+        function startAgentStatusMessages() {
+            setAgentStatus('Researching');
+            addStatusMessage('planning');
+
+            if (!renderedStatusMessages.has('collecting')) {
+                statusTimers.push(setTimeout(() => addStatusMessage('collecting'), 1800));
+            }
+
+            if (!renderedStatusMessages.has('writing')) {
+                statusTimers.push(setTimeout(() => addStatusMessage('writing'), 4200));
+            }
+        }
+
+        function finishAgentStatusMessages() {
+            clearStatusTimers();
+            AGENT_STATUS_MESSAGES.forEach((status) => addStatusMessage(status.id));
+            setAgentStatus('Report ready', true);
+        }
+
+        function normalizeImagePath(path) {
+            if (!path) return '';
+            if (path.startsWith('http') || path.startsWith('/')) return path;
+            return path;
+        }
+
+        function deriveReportTitle(result) {
+            const markdown = result && result.markdown_report;
+            if (markdown) {
+                const match = markdown.match(/^\s*#\s+(.+?)\s*$/m);
+                if (match) return match[1].trim();
+            }
+            return 'Research summary';
+        }
+
+        function addReportCard(result, currentWorkflowId) {
+            if (reportRendered) return;
+            reportRendered = true;
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message bot report-message';
+
+            const card = document.createElement('article');
+            card.className = 'report-card';
+            card.tabIndex = 0;
+            card.setAttribute('role', 'button');
+            card.setAttribute('aria-expanded', 'false');
+
+            const imagePath = normalizeImagePath(result.image_file_path || '');
+            const imageHTML = imagePath
+                ? `<img class="report-card-image" src="${escapeHTML(imagePath)}" alt="AI-generated research visualization">`
+                : '<div class="report-card-image report-card-image-placeholder">Report</div>';
+            const summary = result.short_summary || 'A concise summary report is ready to review.';
+            const title = deriveReportTitle(result);
+
+            card.innerHTML = `
+                <div class="report-card-main">
+                    ${imageHTML}
+                    <div class="report-card-copy">
+                        <span class="report-card-eyebrow">Report ready</span>
+                        <h2>${escapeHTML(title)}</h2>
+                        <p>${escapeHTML(summary)}</p>
+                    </div>
+                </div>
+                <div class="report-card-action">
+                    <span>Open markdown report</span>
+                    <span class="report-card-arrow">↗</span>
+                </div>
+                <div class="report-panel" hidden>
+                    <div class="report-panel-actions">
+                        <button type="button" class="report-download-btn">Download markdown</button>
+                        <a href="success?wf=${encodeURIComponent(currentWorkflowId || '')}" class="report-full-link">Open full page</a>
+                    </div>
+                    <div class="markdown-content compact"></div>
+                </div>
+            `;
+
+            const panel = card.querySelector('.report-panel');
+            const markdown = card.querySelector('.markdown-content');
+            markdown.innerHTML = convertMarkdownToHTML(result.markdown_report || summary);
+
+            function toggleReport() {
+                const isOpen = !panel.hidden;
+                panel.hidden = isOpen;
+                card.setAttribute('aria-expanded', String(!isOpen));
+                document.body.classList.toggle('report-open', !isOpen);
+                if (!isOpen) {
+                    setTimeout(() => {
+                        card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                    }, 0);
+                }
+            }
+
+            card.addEventListener('click', (event) => {
+                if (event.target.closest('a') || event.target.closest('button')) return;
+                // Allow normal interaction (text selection, clicks) inside the
+                // expanded panel; only the collapsed surface toggles the card.
+                if (event.target.closest('.report-panel')) return;
+                toggleReport();
+            });
+
+            card.addEventListener('keydown', (event) => {
+                if (event.target !== card) return;
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    toggleReport();
+                }
+            });
+
+            const downloadBtn = card.querySelector('.report-download-btn');
+            downloadBtn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                downloadMarkdown(result.markdown_report || summary, currentWorkflowId);
+            });
+
+            messageDiv.appendChild(card);
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function downloadMarkdown(content, currentWorkflowId) {
+            const blob = new Blob([content], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `research-report-${currentWorkflowId || 'result'}.md`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
         function resetChat() {
             chatContainer.innerHTML = '';
+            renderedStatusMessages.clear();
+            reportRendered = false;
+            document.body.classList.remove('report-open');
+        }
+
+        function setResearchComplete(complete) {
+            researchComplete = complete;
+            document.body.classList.toggle('research-complete', complete);
+            userInput.placeholder = complete ? POST_COMPLETE_PLACEHOLDER : INITIAL_PLACEHOLDER;
+        }
+
+        function startFreshChat() {
+            // Invalidate any in-flight pollStatus loops so they exit on next tick.
+            pollGeneration += 1;
+            workflowId = null;
+            client.workflowId = null;
+            currentQuestionIndex = 0;
+            lastRenderedQuestionIndex = null;
+            researchingStarted = false;
+            clearStatusTimers();
+            clearInterval(retryCheckInterval);
+            spinnerContainer.classList.remove('retrying');
+            showSpinner(false);
+            localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
+            resetChat();
+            addMessage('What would you like me to research?');
+            setAgentStatus('Ready');
+            setResearchComplete(false);
+            userInput.value = '';
+            userInput.focus();
         }
 
         function renderTranscript(status) {
             resetChat();
-            addMessage('Hey there, what would you like to research?');
+            addMessage('What would you like me to research?');
 
             if (status.original_query) {
                 addMessage(status.original_query, true);
@@ -179,16 +483,23 @@
 
         // Show/hide spinner
         function showSpinner(visible) {
+            if (visible && spinnerContainer.parentElement !== chatContainer) {
+                chatContainer.appendChild(spinnerContainer);
+            }
+
             spinnerContainer.style.display = visible ? 'flex' : 'none';
             if (visible) {
                 spinnerStartTime = Date.now();
                 spinnerContainer.classList.remove('retrying');
-                document.querySelector('.researching-text').textContent = 'Thinking...';
+                document.querySelector('.researching-text').textContent = 'Agent is thinking...';
+                chatContainer.appendChild(spinnerContainer);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
                 clearInterval(retryCheckInterval);
                 retryCheckInterval = setInterval(() => {
                     if (Date.now() - spinnerStartTime > 5000) {
                         spinnerContainer.classList.add('retrying');
-                        document.querySelector('.researching-text').textContent = 'This is taking a little longer than expected, please bear with us...';
+                        document.querySelector('.researching-text').textContent = 'Still researching...';
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
                         clearInterval(retryCheckInterval);
                     }
                 }, 1000);
@@ -203,12 +514,17 @@
             const query = userInput.value.trim();
             if (!query) return;
 
+            if (researchComplete) {
+                startFreshChat();
+            }
+
             // Add user message (animates in as indigo right-aligned bubble)
             addMessage(query, true);
             userInput.value = '';
 
             // Show spinner
             showSpinner(true);
+            setAgentStatus('Starting');
 
             try {
                 if (!workflowId) {
@@ -231,15 +547,20 @@
             }
         }
 
-        // Poll for workflow status
-        async function pollStatus() {
+        // Poll for workflow status. Each invocation captures the current pollGeneration;
+        // if it changes (because the user reset or started a new run), we exit silently
+        // to avoid duplicate side effects and orphan loops.
+        async function pollStatus(generation = pollGeneration) {
+            if (generation !== pollGeneration || !workflowId) return;
             try {
                 const status = await client.getStatus(workflowId);
-              
+                if (generation !== pollGeneration) return;
+
                 if (
                   (status.status === 'awaiting_clarifications' && status.current_question) ||
                   status.status === 'collecting_answers') {
                     currentQuestionIndex = status.current_question_index;
+                    setAgentStatus('Needs input');
 
                     // Hide spinner, show clarification question
                     showSpinner(false);
@@ -248,34 +569,47 @@
                         lastRenderedQuestionIndex = currentQuestionIndex;
                     }
                 } else if (status.status === 'researching') {
-                    // Switch to researching text, reset retrying state
-                    spinnerContainer.classList.remove('retrying');
-                    document.querySelector('.researching-text').textContent = 'Researching...';
-                    clearInterval(retryCheckInterval);
-                    // Keep spinner visible, continue polling
-                    setTimeout(pollStatus, 1000);
-                    
+                    // First entry into researching: do the one-time setup. Subsequent polls
+                    // are no-ops here — re-appending the spinner each tick re-triggered the
+                    // slideIn animation and made the row blink.
+                    if (!researchingStarted) {
+                        researchingStarted = true;
+                        spinnerContainer.classList.remove('retrying');
+                        const txt = document.querySelector('.researching-text');
+                        if (txt.textContent !== 'Agent is researching...') {
+                            txt.textContent = 'Agent is researching...';
+                        }
+                        clearInterval(retryCheckInterval);
+                        startAgentStatusMessages();
+                        keepSpinnerAtBottom();
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }
+                    // Keep polling
+                    setTimeout(() => pollStatus(generation), 1000);
+
                 } else if (status.status === 'completed') {
-                    // Research complete - get result and redirect
+                    // Research complete - keep the result inside the conversation
                     showSpinner(false);
+                    finishAgentStatusMessages();
                     const result = await client.getResult(workflowId);
-                    
-                    // Store result in sessionStorage for success page
+                    if (generation !== pollGeneration) return;
+
                     sessionStorage.setItem('researchResult', JSON.stringify(result));
                     sessionStorage.setItem('workflowId', workflowId);
                     localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
-                    
-                    console.log("redirecting...");
-                    // Redirect to success page
-                    window.location.href = `success?wf=${encodeURIComponent(workflowId)}`;
-                    
+
+                    addMessage('I finished the research. The report is ready to review.');
+                    addReportCard(result, workflowId);
+                    setResearchComplete(true);
+
                 } else {
                     // Other states - keep polling
-                    setTimeout(pollStatus, 1000);
+                    setTimeout(() => pollStatus(generation), 1000);
                 }
             } catch (error) {
+                if (generation !== pollGeneration) return;
                 console.error('Polling error:', error);
-                setTimeout(pollStatus, 2000);
+                setTimeout(() => pollStatus(generation), 2000);
             }
         }
 
@@ -286,6 +620,7 @@
                 handleSubmit();
             }
         });
+        resetButton.addEventListener('click', startFreshChat);
 
         async function resumeActiveWorkflow() {
             const activeWorkflowId = localStorage.getItem(ACTIVE_WORKFLOW_KEY);
@@ -305,11 +640,17 @@
                     sessionStorage.setItem('researchResult', JSON.stringify(result));
                     sessionStorage.setItem('workflowId', workflowId);
                     localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
-                    window.location.href = `success?wf=${encodeURIComponent(workflowId)}`;
+                    finishAgentStatusMessages();
+                    addMessage('I finished the research. The report is ready to review.');
+                    addReportCard(result, workflowId);
+                    setResearchComplete(true);
                 } else if (status.status === 'researching' || status.status === 'pending') {
                     showSpinner(true);
                     document.querySelector('.researching-text').textContent =
-                        status.status === 'researching' ? 'Researching...' : 'Thinking...';
+                        status.status === 'researching' ? 'Agent is researching...' : 'Agent is thinking...';
+                    if (status.status === 'researching') {
+                        startAgentStatusMessages();
+                    }
                     pollStatus();
                 }
             } catch (error) {
@@ -323,7 +664,52 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', resumeActiveWorkflow);
+        function renderDemoComplete() {
+            const demoWorkflowId = 'interactive-research-demo';
+            const demoResult = {
+                short_summary: 'A concise analysis of uneven recovery across corridors, businesses, and transit access.',
+                markdown_report: `# Post-COVID Recovery in SF Neighborhoods
+
+## Summary
+San Francisco neighborhoods are recovering unevenly. Foot traffic has improved in several commercial corridors, but the recovery depends heavily on transit access, office occupancy, and local business mix.
+
+## Key Findings
+- Foot traffic is recovering unevenly across neighborhoods.
+- Small businesses are rebounding faster in corridors with steady local demand.
+- Transit access remains a major factor in neighborhood recovery patterns.
+
+## Suggested Follow-Ups
+- Compare recovery by commercial corridor.
+- Add residential demand and office occupancy signals.
+- Re-run the analysis for 2024-2026 only.`,
+                follow_up_questions: [],
+                image_file_path: 'static/public/images/placeholder.png',
+            };
+
+            resetChat();
+            workflowId = demoWorkflowId;
+            setAgentStatus('Report ready', true);
+            sessionStorage.setItem('researchResult', JSON.stringify(demoResult));
+            sessionStorage.setItem('workflowId', demoWorkflowId);
+
+            addMessage('What would you like me to research?');
+            addMessage('Research post-COVID recovery in San Francisco neighborhoods.', true);
+            addMessage('What should I focus on?');
+            addMessage('Compare foot traffic, small businesses, and transit access. Include a summary report.', true);
+            finishAgentStatusMessages();
+            addMessage('I finished the research. The report is ready to review.');
+            addReportCard(demoResult, demoWorkflowId);
+            setResearchComplete(true);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            if (DEMO_MODE === 'complete') {
+                renderDemoComplete();
+                return;
+            }
+
+            resumeActiveWorkflow();
+        });
     </script>
 </body>
 </html>
