@@ -39,6 +39,10 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     pid_file = Path(os.getenv("DEMO_WORKER_PID_FILE", ".demo-worker.pid"))
     pid_file.write_text(str(os.getpid()))
+    # Default to 1 to keep the crash-recovery demo path (DEMO_SEARCH_BRANCH_*) responsive:
+    # with low concurrency, fewer in-flight activities have to age out on timeout when the
+    # worker SIGKILLs itself. The clean-demo path opts into higher concurrency via
+    # scripts/start-clean-worker (which exports DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES=4).
     max_concurrent_activities = int(
         os.getenv("DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES", "1")
     )

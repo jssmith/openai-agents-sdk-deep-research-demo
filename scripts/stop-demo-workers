@@ -7,7 +7,7 @@ cd "$repo_dir"
 
 pid_files=("$@")
 if [[ "${#pid_files[@]}" -eq 0 ]]; then
-  pid_files=(.demo-worker-1.pid .demo-worker-2.pid .demo-worker.pid)
+  pid_files=(.demo-worker-1.pid .demo-worker-2.pid .demo-worker.pid .demo-worker-clean.pid)
 fi
 
 for pid_file in "${pid_files[@]}"; do
