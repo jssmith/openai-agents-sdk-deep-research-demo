@@ -7,15 +7,21 @@ requires-python = ">=3.10"
 readme = "README.md"
 license = "MIT"
 dependencies = [
-    "temporalio>=1.17.0,<2",
-    "openai-agents>=0.2.3,<=0.2.9",
-    "temporalio[openai-agents]>=1.17.0",
-    "pydantic>=2.10.6,<3",
-    "weasyprint>=61.0.0",
+    "temporalio>=1.27.0,<2",
+    "openai-agents>=0.14.6,<0.16",
+    # temporalio 1.27.0's contrib.openai_agents transitively imports
+    # contrib.opentelemetry, so we need both extras together.
+    "temporalio[openai-agents,opentelemetry]>=1.27.0",
+    "pydantic>=2.13.0,<3",
+    "weasyprint>=68.0.0",
     "markdown>=3.4.0",
     "dotenv>=0.9.9",
-    "fastapi>=0.122.0",
+    "fastapi>=0.136.0",
     "uvicorn>=0.37.0",
+    # openai-agents 0.14.6 imports `from griffe import Docstring,
+    # DocstringSectionKind` but its declared dep on `griffelib` is an empty
+    # placeholder. Pin griffe<2 (1.x has the expected API) until upstream fixes.
+    "griffe>=1.0,<2",
 ]
 
 [project.urls]
@@ -37,6 +43,9 @@ dev = [
 
 [tool.uv]
 default-groups = ["dev"]
+# Override the global 7-day cooldown for temporalio — we want 1.27.0
+# (published 2026-04-30) for the agentic refactor work.
+exclude-newer-package = { temporalio = "2026-05-03" }
 
 [tool.isort]
 profile = "black"
