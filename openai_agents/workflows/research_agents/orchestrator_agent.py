@@ -14,7 +14,7 @@ import os
 from datetime import timedelta
 from typing import Annotated, Any
 
-from agents import Agent, RunContextWrapper, Runner, function_tool
+from agents import Agent, RunContextWrapper, function_tool
 from agents.model_settings import ModelSettings
 from openai.types.shared.reasoning import Reasoning
 from pydantic import BaseModel, Field
@@ -37,10 +37,7 @@ from openai_agents.workflows.image_generation_activity import (
 from openai_agents.workflows.research_agents.research_worker_agent import (
     SearchSummary,
 )
-from openai_agents.workflows.research_agents.writer_agent import (
-    ReportData,
-    new_writer_agent,
-)
+from openai_agents.workflows.research_agents.writer_agent import ReportData
 
 # ctx.context is always an InteractiveResearchWorkflow at runtime, but we type
 # it as Any here to avoid a circular import (the workflow imports this module).
@@ -51,8 +48,9 @@ SYSTEM_PROMPT = (
     "research process by calling tools. You must call them in the following order, "
     "and you cannot complete the task by skipping any step.\n"
     "\n"
-    "1. ask_user_clarifications: ask 2-3 clarifying questions that narrow the user's "
-    "intent. Wait for the answers (the tool returns them as a dict).\n"
+    "1. ask_user_clarifications: ask 1-2 clarifying questions that narrow the user's "
+    "intent. Keep this short - one question is fine if the query is already clear. "
+    "Wait for the answers (the tool returns them as a dict).\n"
     "\n"
     "2. run_parallel_research: decompose the clarified query into 4-6 focused subqueries "
     "and dispatch them in parallel. Each subquery must explore a distinct angle of the "
@@ -64,13 +62,19 @@ SYSTEM_PROMPT = (
     "Provide a 2-sentence visual description focused on atmosphere and metaphor. "
     "Never request text, labels, charts, or numbers in the image.\n"
     "\n"
-    "5. write_report: hand the original query, the search summaries, the warehouse "
-    "summary, and the image description to the writer sub-agent. The tool returns a "
-    "ReportData with markdown_report, short_summary, and follow_up_questions.\n"
+    "5. finalize_report: write the report yourself using the findings you have gathered, "
+    "and pass it back along with image_path, warehouse_summary, and search_summaries. "
+    "The system requires all of them - you literally cannot finalize with anything missing.\n"
     "\n"
-    "6. finalize_report: pass back every gathered piece (report, image_path, "
-    "warehouse_summary, search_summaries). The system requires all of them - you "
-    "literally cannot finalize with anything missing.\n"
+    "Report style guidance for finalize_report:\n"
+    "- markdown_report: clear, executive-ready markdown. 450-650 words. Start with a "
+    "single H1 (`# ...`) naming the topic in 4-8 words (no trailing period). Then a "
+    "short introduction with context, 3-5 sections with clear headings, direct analysis "
+    "and ranked takeaways where useful, specific examples and data points where "
+    "available, and a concise conclusion with implications. Favor substance over length. "
+    "Avoid filler, repeated caveats, and generic background.\n"
+    "- short_summary: 2-3 sentences capturing the headline findings.\n"
+    "- follow_up_questions: 3 suggested topics to research further.\n"
     "\n"
     "Be efficient. Do not call tools out of order or repeat them. Do not narrate to the "
     "user between tool calls."
@@ -85,7 +89,7 @@ SYSTEM_PROMPT = (
 class ClarificationsRequest(BaseModel):
     """Questions the orchestrator wants the user to answer."""
 
-    questions: Annotated[list[str], Field(min_length=2, max_length=3)]
+    questions: Annotated[list[str], Field(min_length=1, max_length=2)]
 
 
 class ParallelResearchRequest(BaseModel):
@@ -95,9 +99,17 @@ class ParallelResearchRequest(BaseModel):
 
 
 class FinalizeReportRequest(BaseModel):
-    """Terminal payload. Every field is required - the type is the validator."""
+    """Terminal payload. Every field is required - the type is the validator.
 
-    report_data: ReportData
+    The orchestrator produces the final report itself rather than handing findings
+    to a separate writer sub-agent. markdown_report, short_summary, and
+    follow_up_questions are the user-visible output; the rest are evidence the
+    report was actually grounded in the gathered findings.
+    """
+
+    short_summary: Annotated[str, Field(min_length=1)]
+    markdown_report: Annotated[str, Field(min_length=300)]
+    follow_up_questions: Annotated[list[str], Field(min_length=2, max_length=5)]
     image_path: Annotated[str, Field(min_length=1)]
     warehouse_summary: Annotated[str, Field(min_length=1)]
     search_summaries: Annotated[list[SearchSummary], Field(min_length=3)]
@@ -185,44 +197,24 @@ async def generate_research_image(
 
 
 @function_tool
-async def write_report(
-    ctx: RunContextWrapper[Any],
-    query: Annotated[str, Field(min_length=1)],
-    search_summaries: Annotated[list[SearchSummary], Field(min_length=3)],
-    warehouse_summary: Annotated[str, Field(min_length=1)],
-    image_description: Annotated[str, Field(min_length=1)],
-) -> ReportData:
-    """Hand findings to the writer sub-agent and return a structured ReportData.
-
-    All four arguments are required - the writer cannot produce a report without them.
-    """
-    bullets = "\n".join(
-        f"- ({s.query}) {s.summary}" for s in search_summaries
-    )
-    findings = (
-        f"Original query: {query}\n\n"
-        f"Search findings:\n{bullets}\n\n"
-        f"Proprietary warehouse context:\n{warehouse_summary}\n\n"
-        f"Visual concept:\n{image_description}"
-    )
-    writer = new_writer_agent()
-    result = await Runner.run(writer, findings)
-    return result.final_output_as(ReportData)
-
-
-@function_tool
 async def finalize_report(
     ctx: RunContextWrapper[Any],
     request: FinalizeReportRequest,
 ) -> str:
     """Terminal tool: store the report, mark the workflow complete, and exit.
 
-    The required structural arguments mean the agent cannot reach this step without
-    having produced a report, an image_path, a warehouse_summary, and at least three
-    search_summaries.
+    The orchestrator writes the report itself in this call - markdown_report,
+    short_summary, and follow_up_questions are the user-visible output. The
+    image_path / warehouse_summary / search_summaries fields anchor the report
+    to the findings the agent actually gathered.
     """
     wf = ctx.context
-    wf.complete_research(request.report_data, request.image_path)
+    report = ReportData(
+        short_summary=request.short_summary,
+        markdown_report=request.markdown_report,
+        follow_up_questions=request.follow_up_questions,
+    )
+    wf.complete_research(report, request.image_path)
     return "Research finalized."
 
 
@@ -279,7 +271,6 @@ def new_orchestrator_agent() -> Agent:
             run_parallel_research,
             query_data_warehouse,
             generate_research_image,
-            write_report,
             finalize_report,
         ],
     )
