@@ -10,7 +10,7 @@
     <main class="report-shell">
         <header class="report-header">
             <div>
-                <a class="report-back-link" href="/">Back to conversation</a>
+                <a class="report-back-link" id="reportBackLink" href="/">Back to conversation</a>
                 <h1>Deep Research Agent</h1>
             </div>
             <span class="agent-status report-status">
@@ -49,6 +49,7 @@
         const reportTitle = document.getElementById('reportTitle');
         const reportSummary = document.getElementById('reportSummary');
         const downloadBtn = document.getElementById('downloadReportBtn');
+        const backLink = document.getElementById('reportBackLink');
 
         marked.use(markedGfmHeadingId.gfmHeadingId());
 
@@ -98,6 +99,14 @@
 
             const result = JSON.parse(resultJson);
             const markdown = result.markdown_report || '# Research report\n\nNo markdown report was returned.';
+
+            // Preserve the workflow ID on the back link so the conversation
+            // page can re-fetch the result instead of landing on an empty
+            // screen (localStorage is cleared on completion, so the URL is
+            // the only carrier).
+            if (workflowId && backLink) {
+                backLink.href = '/?wf=' + encodeURIComponent(workflowId);
+            }
 
             reportTitle.textContent = titleFromMarkdown(markdown);
             reportSummary.textContent = result.short_summary || 'The research report is ready to review.';

@@ -91,6 +91,10 @@ class ResearchInteractionDict(BaseModel):
     status: str = "pending"
     research_completed: bool = False
     final_result: str | None = None
+    # Coarse phase the orchestrator agent is currently in. Used by the UI to
+    # render its progress timeline against real backend state instead of
+    # hardcoded timers. Values: None | "planning" | "collecting" | "writing".
+    current_activity: str | None = None
 
     def get_current_question(self) -> str | None:
         """Get the current question that needs an answer"""

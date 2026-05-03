@@ -208,6 +208,7 @@ async def get_status(workflow_id: str):
         "current_question_index": status.current_question_index,
         "total_questions": len(status.clarification_questions or []),
         "clarification_responses": status.clarification_responses or {},
+        "current_activity": status.current_activity,
     }
 
     if status.status == "awaiting_clarifications":

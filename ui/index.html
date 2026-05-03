@@ -312,13 +312,23 @@
         function startAgentStatusMessages() {
             setAgentStatus('Researching');
             addStatusMessage('planning');
+            // 'collecting' and 'writing' are no longer fired on a fixed timer -
+            // they're driven by the orchestrator's current_activity polled from
+            // the workflow (see pollStatus). 'writing' is also force-rendered at
+            // completion via finishAgentStatusMessages as a safety net.
+        }
 
-            if (!renderedStatusMessages.has('collecting')) {
-                statusTimers.push(setTimeout(() => addStatusMessage('collecting'), 1800));
-            }
-
-            if (!renderedStatusMessages.has('writing')) {
-                statusTimers.push(setTimeout(() => addStatusMessage('writing'), 4200));
+        function applyCurrentActivity(activity) {
+            if (!activity) return;
+            if (activity === 'planning') {
+                addStatusMessage('planning');
+            } else if (activity === 'collecting') {
+                addStatusMessage('planning');
+                addStatusMessage('collecting');
+            } else if (activity === 'writing') {
+                addStatusMessage('planning');
+                addStatusMessage('collecting');
+                addStatusMessage('writing');
             }
         }
 
@@ -605,6 +615,8 @@
                         keepSpinnerAtBottom();
                         chatContainer.scrollTop = chatContainer.scrollHeight;
                     }
+                    // Surface the orchestrator's current phase as a progress message.
+                    applyCurrentActivity(status.current_activity);
                     // Keep polling
                     setTimeout(() => pollStatus(generation), 1000);
 

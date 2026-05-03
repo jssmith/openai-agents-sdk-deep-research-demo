@@ -109,6 +109,10 @@ class InteractiveResearchWorkflow:
         self.research_completed: bool = False
         self.workflow_ended: bool = False
         self.research_initialized: bool = False
+        # Coarse phase the orchestrator is currently in. Mutated by tool bodies;
+        # surfaced to the UI through get_status so the progress timeline tracks
+        # real backend state.
+        self.current_activity: str | None = None
 
     # ------------------------------------------------------------------
     # Helpers used by orchestrator tools (called from agent context)
@@ -154,6 +158,7 @@ class InteractiveResearchWorkflow:
         """
         if not subqueries:
             return []
+        self.current_activity = "collecting"
         await prepare_first_search_branch(subqueries[0], len(subqueries))
 
         worker = new_research_worker_agent()
@@ -179,6 +184,7 @@ class InteractiveResearchWorkflow:
 
     def complete_research(self, report: ReportData, image_path: str) -> None:
         """Workflow-state tool helper: mark the workflow complete with the report."""
+        self.current_activity = "writing"
         self.report_data = report
         # Trust whatever the agent passed for the image_path. set_image was
         # already called by generate_research_image, but the agent may have
@@ -224,6 +230,7 @@ class InteractiveResearchWorkflow:
         )
 
         orchestrator = new_orchestrator_agent()
+        self.current_activity = "planning"
         try:
             await Runner.run(
                 orchestrator,
@@ -294,6 +301,7 @@ class InteractiveResearchWorkflow:
             current_question=current_question,
             status=status,
             research_completed=self.research_completed,
+            current_activity=self.current_activity,
         )
 
     @workflow.update
