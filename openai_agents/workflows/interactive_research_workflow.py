@@ -89,6 +89,24 @@ class InteractiveResearchWorkflow:
         UI's progress timeline). Subsequent calls leave it None and reuse the
         plan that was already stored.
         """
+        # Guard against a model that emits multiple elicit_user tool calls in
+        # one turn (the runtime supports parallel tool calls). Two concurrent
+        # invocations would race on self.pending_elicitation and lose a
+        # question; reject the second one explicitly.
+        if self.pending_elicitation is not None:
+            raise ApplicationError(
+                "An elicitation is already pending; wait for it to be answered "
+                "before issuing another. Issue elicit_user calls sequentially, "
+                "not in parallel."
+            )
+        # Upper bound: the contract is exactly two elicitations, mirroring the
+        # lower bound enforced in tool_run_parallel_research.
+        if len(self.completed_elicitations) >= 2:
+            raise ApplicationError(
+                "elicit_user has already been called twice; the contract is "
+                "exactly two elicitations. Proceed to run_parallel_research."
+            )
+
         if self.progress_plan is None:
             if progress_plan is None:
                 raise ApplicationError(

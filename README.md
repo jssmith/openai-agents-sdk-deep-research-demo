@@ -24,7 +24,6 @@ This example is designed to be similar to the OpenAI Cookbook: [Introduction to 
 
 - `openai_agents/workflows/interactive_research_workflow.py` - Interactive research workflow
 - `openai_agents/workflows/research_agents/` - All research agent components
-- `openai_agents/run_interactive_research_workflow.py` - Interactive research client
 - `openai_agents/workflows/pdf_generation_activity.py` - PDF generation activity
 - `openai_agents/workflows/research_agents/pdf_generator_agent.py` - PDF generation agent
 
