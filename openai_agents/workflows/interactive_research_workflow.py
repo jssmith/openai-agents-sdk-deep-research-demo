@@ -24,6 +24,7 @@ with workflow.unsafe.imports_passed_through():
     from agents import Runner
 
     from openai_agents.workflows.research_agents.orchestrator_agent import (
+        FinalizeReportRequest,
         new_orchestrator_agent,
         prepare_first_search_branch,
     )
@@ -232,7 +233,7 @@ class InteractiveResearchWorkflow:
         orchestrator = new_orchestrator_agent()
         self.current_activity = "planning"
         try:
-            await Runner.run(
+            run_result = await Runner.run(
                 orchestrator,
                 self.original_query,
                 context=self,
@@ -247,17 +248,20 @@ class InteractiveResearchWorkflow:
                 "Research ended by user", "Research workflow ended by user"
             )
 
-        if not self.research_completed or self.report_data is None:
-            # The orchestrator should have called finalize_report. Treat anything
-            # else as a hard failure rather than fabricating a partial result.
-            raise ApplicationError(
-                "Orchestrator returned without calling finalize_report"
-            )
+        # The orchestrator's terminal action is emitting a structured
+        # FinalizeReportRequest as its final response. Validate and apply.
+        final = run_result.final_output_as(FinalizeReportRequest)
+        report = ReportData(
+            short_summary=final.short_summary,
+            markdown_report=final.markdown_report,
+            follow_up_questions=final.follow_up_questions,
+        )
+        self.complete_research(report, final.image_path)
 
         return self._build_result(
-            self.report_data.short_summary,
-            self.report_data.markdown_report,
-            self.report_data.follow_up_questions,
+            report.short_summary,
+            report.markdown_report,
+            report.follow_up_questions,
             self.research_image_path,
         )
 

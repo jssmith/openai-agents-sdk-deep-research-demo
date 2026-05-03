@@ -37,7 +37,6 @@ from openai_agents.workflows.image_generation_activity import (
 from openai_agents.workflows.research_agents.research_worker_agent import (
     SearchSummary,
 )
-from openai_agents.workflows.research_agents.writer_agent import ReportData
 
 # ctx.context is always an InteractiveResearchWorkflow at runtime, but we type
 # it as Any here to avoid a circular import (the workflow imports this module).
@@ -62,11 +61,13 @@ SYSTEM_PROMPT = (
     "Provide a 2-sentence visual description focused on atmosphere and metaphor. "
     "Never request text, labels, charts, or numbers in the image.\n"
     "\n"
-    "5. finalize_report: write the report yourself using the findings you have gathered, "
-    "and pass it back along with image_path, warehouse_summary, and search_summaries. "
-    "The system requires all of them - you literally cannot finalize with anything missing.\n"
+    "After all four tools have run, you finish by emitting a structured "
+    "FinalizeReportRequest as your final response. This is the only valid way to "
+    "complete the task - the runtime parses your final response into that schema. "
+    "Include every field: the report you wrote, image_path, warehouse_summary, and "
+    "search_summaries. The system requires all of them.\n"
     "\n"
-    "Report style guidance for finalize_report:\n"
+    "Report style guidance for the final response:\n"
     "- markdown_report: clear, executive-ready markdown. 450-650 words. Start with a "
     "single H1 (`# ...`) naming the topic in 4-8 words (no trailing period). Then a "
     "short introduction with context, 3-5 sections with clear headings, direct analysis "
@@ -196,26 +197,12 @@ async def generate_research_image(
     return result.image_file_path
 
 
-@function_tool
-async def finalize_report(
-    ctx: RunContextWrapper[Any],
-    request: FinalizeReportRequest,
-) -> str:
-    """Terminal tool: store the report, mark the workflow complete, and exit.
-
-    The orchestrator writes the report itself in this call - markdown_report,
-    short_summary, and follow_up_questions are the user-visible output. The
-    image_path / warehouse_summary / search_summaries fields anchor the report
-    to the findings the agent actually gathered.
-    """
-    wf = ctx.context
-    report = ReportData(
-        short_summary=request.short_summary,
-        markdown_report=request.markdown_report,
-        follow_up_questions=request.follow_up_questions,
-    )
-    wf.complete_research(report, request.image_path)
-    return "Research finalized."
+# Note: there is intentionally no finalize_report tool. The orchestrator's
+# terminal action is to emit a FinalizeReportRequest as its structured final
+# response (output_type below). With a tool, gpt-5 sometimes serialized the
+# large argument payload as a text message instead of as a function call,
+# which left research_completed=False; using output_type makes the structured
+# response *be* the natural way to finish.
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +258,6 @@ def new_orchestrator_agent() -> Agent:
             run_parallel_research,
             query_data_warehouse,
             generate_research_image,
-            finalize_report,
         ],
+        output_type=FinalizeReportRequest,
     )
