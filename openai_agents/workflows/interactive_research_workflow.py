@@ -70,14 +70,6 @@ async def process_clarification(
         f"'{input.answer}' for question: '{input.current_question}'"
     )
 
-    # Simulate cloud provider outages for the second-to-last question
-    demo_retry_failures = int(os.getenv("DEMO_CLARIFICATION_RETRY_FAILURES", "0") or "0")
-    if demo_retry_failures and (input.current_question_index + 2) == input.total_questions:
-        attempt = activity.info().attempt
-        if attempt <= demo_retry_failures:
-            await asyncio.sleep(10)
-            raise ApplicationError("Simulated failure -- try again soon :)")
-
     question_key = f"question_{input.current_question_index}"
     return ProcessClarificationResult(
         question_key=question_key,
