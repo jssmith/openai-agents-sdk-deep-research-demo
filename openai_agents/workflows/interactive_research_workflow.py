@@ -1,26 +1,45 @@
+"""Interactive research workflow.
+
+Agentic version: a single orchestrator agent runs inside the workflow and drives
+every stage (clarifications, parallel research sub-agents, data warehouse, image
+generation, report writing, finalization) via tool calls. Workflow state is
+mutated through tools so the UI's polling contract (status field, clarification
+question index, completed report) is preserved unchanged.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import os
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
 
 from temporalio import activity, workflow
 from temporalio.exceptions import ApplicationError
 
-from openai_agents.workflows.research_agents.research_manager import (
-    InteractiveResearchManager,
-)
-from openai_agents.workflows.research_agents.research_models import (
-    ClarificationInput,
-    ResearchInteractionDict,
-    SingleClarificationInput,
-    UserQueryInput,
-)
+with workflow.unsafe.imports_passed_through():
+    from agents import Runner
+
+    from openai_agents.workflows.research_agents.orchestrator_agent import (
+        new_orchestrator_agent,
+        prepare_first_search_branch,
+    )
+    from openai_agents.workflows.research_agents.research_models import (
+        ClarificationInput,
+        ResearchInteractionDict,
+        SingleClarificationInput,
+        UserQueryInput,
+    )
+    from openai_agents.workflows.research_agents.research_worker_agent import (
+        SearchSummary,
+        new_research_worker_agent,
+    )
+    from openai_agents.workflows.research_agents.writer_agent import ReportData
 
 
 @dataclass
 class ProcessClarificationInput:
-    """Input for clarification processing activity"""
+    """Input for clarification processing activity."""
 
     answer: str
     current_question_index: int
@@ -30,7 +49,7 @@ class ProcessClarificationInput:
 
 @dataclass
 class ProcessClarificationResult:
-    """Result from clarification processing activity"""
+    """Result from clarification processing activity."""
 
     question_key: str
     answer: str
@@ -41,7 +60,7 @@ class ProcessClarificationResult:
 async def process_clarification(
     input: ProcessClarificationInput,
 ) -> ProcessClarificationResult:
-    """Process a single clarification answer"""
+    """Process a single clarification answer."""
     activity.logger.info(
         f"Processing clarification answer {input.current_question_index + 1}/{input.total_questions}: "
         f"'{input.answer}' for question: '{input.current_question}'"
@@ -65,7 +84,7 @@ async def process_clarification(
 
 @dataclass
 class InteractiveResearchResult:
-    """Result from interactive research workflow including both markdown"""
+    """Result returned to the workflow caller."""
 
     short_summary: str
     markdown_report: str
@@ -76,16 +95,97 @@ class InteractiveResearchResult:
 @workflow.defn
 class InteractiveResearchWorkflow:
     def __init__(self) -> None:
-        self.research_manager = InteractiveResearchManager()
-        # Simple instance variables instead of complex dataclass
+        # State observed by the get_status query and the UI.
         self.original_query: str | None = None
         self.clarification_questions: list[str] = []
         self.clarification_responses: dict[str, str] = {}
         self.current_question_index: int = 0
-        self.report_data: Any | None = None
+        self.report_data: ReportData | None = None
+        self.research_image_path: str | None = None
+        self.research_image_description: str | None = None
         self.research_completed: bool = False
         self.workflow_ended: bool = False
         self.research_initialized: bool = False
+
+    # ------------------------------------------------------------------
+    # Helpers used by orchestrator tools (called from agent context)
+    # ------------------------------------------------------------------
+
+    async def tool_ask_user_clarifications(
+        self, questions: list[str]
+    ) -> dict[str, str]:
+        """Workflow-state tool: publish clarifying questions and wait for answers.
+
+        Drives the existing UI flow: as soon as `clarification_questions` is non-empty
+        and `clarification_responses` is empty, the get_status query reports
+        "awaiting_clarifications" and the UI shows the first question. Each answer
+        comes back through the existing provide_single_clarification update.
+        """
+        self.clarification_questions = list(questions)
+        self.clarification_responses = {}
+        self.current_question_index = 0
+
+        await workflow.wait_condition(
+            lambda: self.workflow_ended
+            or len(self.clarification_responses) >= len(self.clarification_questions)
+        )
+
+        if self.workflow_ended:
+            raise ApplicationError("Workflow ended by user while awaiting clarifications")
+
+        return {
+            self.clarification_questions[i]: self.clarification_responses[
+                f"question_{i}"
+            ]
+            for i in range(len(self.clarification_questions))
+        }
+
+    async def tool_run_parallel_research(
+        self, subqueries: list[str]
+    ) -> list[SearchSummary]:
+        """Workflow-state tool: fan out research worker sub-agents in parallel.
+
+        Runs the demo's prepare_web_search_branch activity for branch 0 first
+        (preserves the SIGKILL failure-recovery beat), then dispatches one
+        research_worker_agent per subquery via asyncio.gather.
+        """
+        if not subqueries:
+            return []
+        await prepare_first_search_branch(subqueries[0], len(subqueries))
+
+        worker = new_research_worker_agent()
+
+        async def _run_one(q: str) -> SearchSummary | None:
+            try:
+                input_str = f"Subquery: {q}"
+                result = await Runner.run(worker, input_str)
+                return result.final_output_as(SearchSummary)
+            except Exception as e:
+                workflow.logger.warning(f"Research worker failed for {q!r}: {e}")
+                return None
+
+        results = await asyncio.gather(
+            *[_run_one(sq) for sq in subqueries], return_exceptions=False
+        )
+        return [r for r in results if r is not None]
+
+    def set_image(self, image_path: str, description: str) -> None:
+        """Workflow-state tool helper: record the generated research image."""
+        self.research_image_path = image_path
+        self.research_image_description = description
+
+    def complete_research(self, report: ReportData, image_path: str) -> None:
+        """Workflow-state tool helper: mark the workflow complete with the report."""
+        self.report_data = report
+        # Trust whatever the agent passed for the image_path. set_image was
+        # already called by generate_research_image, but the agent may have
+        # carried a different path through finalize_report (e.g. via cache).
+        self.research_image_path = image_path
+        self.research_completed = True
+
+    # ------------------------------------------------------------------
+    # Result construction and main run loop
+    # ------------------------------------------------------------------
 
     def _build_result(
         self,
@@ -94,7 +194,6 @@ class InteractiveResearchWorkflow:
         questions: list[str] | None = None,
         image_path: str | None = None,
     ) -> InteractiveResearchResult:
-        """Helper to build InteractiveResearchResult"""
         return InteractiveResearchResult(
             short_summary=summary,
             markdown_report=report,
@@ -106,103 +205,68 @@ class InteractiveResearchWorkflow:
     async def run(
         self, initial_query: str | None = None, use_clarifications: bool = True
     ) -> InteractiveResearchResult:
-        """
-        Run research workflow - long-running interactive workflow with clarifying questions
+        """Long-running interactive workflow driven by the orchestrator agent."""
+        # Wait for the start_research update (or an end signal).
+        await workflow.wait_condition(
+            lambda: self.workflow_ended or self.research_initialized
+        )
 
-        Args:
-            initial_query: Optional initial research query (for backward compatibility)
-            use_clarifications: If True, enables interactive clarifying questions (for backward compatibility)
-        """
-        if initial_query and not use_clarifications:
-            # Simple direct research mode - backward compatibility
-            report_data = await self.research_manager._run_direct(initial_query)
+        if self.workflow_ended:
             return self._build_result(
-                report_data.short_summary,
-                report_data.markdown_report,
-                report_data.follow_up_questions,
-                self.research_manager.research_image_path,
+                "Research ended by user", "Research workflow ended by user"
             )
 
-        # Main workflow loop - wait for research to be started and completed
-        while True:
-            workflow.logger.info("Waiting for research to start or complete...")
+        assert self.original_query is not None, (
+            "research_initialized was set without an original_query"
+        )
 
-            # Wait for workflow end signal, research completion, or research initialization
-            await workflow.wait_condition(
-                lambda: self.workflow_ended
-                or self.research_completed
-                or self.research_initialized
+        orchestrator = new_orchestrator_agent()
+        try:
+            await Runner.run(
+                orchestrator,
+                self.original_query,
+                context=self,
+                max_turns=int(os.getenv("ORCHESTRATOR_MAX_TURNS", "30")),
+            )
+        except Exception as e:
+            workflow.logger.exception(f"Orchestrator agent failed: {e}")
+            raise
+
+        if self.workflow_ended and not self.research_completed:
+            return self._build_result(
+                "Research ended by user", "Research workflow ended by user"
             )
 
-            # If workflow was signaled to end, exit gracefully
-            if self.workflow_ended:
-                return self._build_result(
-                    "Research ended by user", "Research workflow ended by user"
-                )
+        if not self.research_completed or self.report_data is None:
+            # The orchestrator should have called finalize_report. Treat anything
+            # else as a hard failure rather than fabricating a partial result.
+            raise ApplicationError(
+                "Orchestrator returned without calling finalize_report"
+            )
 
-            # If research has been completed, return results
-            if self.research_completed and self.report_data:
-                return self._build_result(
-                    self.report_data.short_summary,
-                    self.report_data.markdown_report,
-                    self.report_data.follow_up_questions,
-                    self.research_manager.research_image_path,
-                )
+        return self._build_result(
+            self.report_data.short_summary,
+            self.report_data.markdown_report,
+            self.report_data.follow_up_questions,
+            self.research_image_path,
+        )
 
-            # If research is initialized but not completed, handle the clarification flow
-            if self.research_initialized and not self.research_completed:
-
-                # If we have clarification questions, wait for all responses
-                if self.clarification_questions:
-                    # Wait for all clarifications to be collected
-                    await workflow.wait_condition(
-                        lambda: self.workflow_ended
-                        or len(self.clarification_responses)
-                        >= len(self.clarification_questions)
-                    )
-
-                    if self.workflow_ended:
-                        return self._build_result(
-                            "Research ended by user", "Research workflow ended by user"
-                        )
-
-                    # Complete research with clarifications
-                    if self.original_query:  # Type guard to ensure it's not None
-                        self.report_data = await self.research_manager.run_with_clarifications_complete(
-                            self.original_query,
-                            self.clarification_questions,
-                            self.clarification_responses,
-                        )
-
-                    self.research_completed = True
-                    continue
-
-                # If we already have report data (from direct research), mark as completed
-                elif self.report_data is not None:
-                    self.research_completed = True
-                    continue
-
-                # If no clarification questions and no report data, it means research failed
-                return self._build_result(
-                    "No research completed", "Research failed to start properly"
-                )
+    # ------------------------------------------------------------------
+    # Queries / updates / signals (UI contract - shape preserved)
+    # ------------------------------------------------------------------
 
     def _get_current_question(self) -> str | None:
-        """Get the current question that needs an answer"""
         if self.current_question_index >= len(self.clarification_questions):
             return None
         return self.clarification_questions[self.current_question_index]
 
     def _has_more_questions(self) -> bool:
-        """Check if there are more questions to answer"""
         return self.current_question_index < len(self.clarification_questions)
 
     @workflow.query
     def get_status(self) -> ResearchInteractionDict:
-        """Get current research status"""
         current_question = self._get_current_question()
 
-        # Determine status based on workflow state
         if self.workflow_ended:
             status = "ended"
         elif self.research_completed:
@@ -231,37 +295,24 @@ class InteractiveResearchWorkflow:
 
     @workflow.update
     async def start_research(self, input: UserQueryInput) -> ResearchInteractionDict:
-        """Start a new research session with clarifying questions flow"""
+        """Start a new research session.
+
+        Just records the query and unblocks the main run loop. The orchestrator
+        agent will drive everything from there - including deciding to ask
+        clarifying questions on its first turn.
+        """
         workflow.logger.info(f"Starting research for query: '{input.query}'")
         self.original_query = input.query
-
-        # Immediately check if clarifications are needed
-        result = await self.research_manager.run_with_clarifications_start(
-            self.original_query
-        )
-
-        if result.needs_clarifications:
-            # Set up clarifying questions for client to see immediately
-            self.clarification_questions = result.questions or []
-        else:
-            # No clarifications needed, store the research data but let main loop complete it
-            if result.report_data is not None:
-                self.report_data = result.report_data
-            # If research failed, main loop will handle fallback
-
-        # Mark research as initialized so main loop can proceed
         self.research_initialized = True
-
         return self.get_status()
 
     @workflow.update
     async def provide_single_clarification(
         self, input: SingleClarificationInput
     ) -> ResearchInteractionDict:
-        """Provide a single clarification response"""
+        """Provide a single clarification response."""
         current_question = self._get_current_question()
 
-        # Process clarification in activity
         result = await workflow.execute_activity(
             process_clarification,
             ProcessClarificationInput(
@@ -273,35 +324,28 @@ class InteractiveResearchWorkflow:
             start_to_close_timeout=timedelta(seconds=30),
         )
 
-        # Apply result to workflow state
         self.clarification_responses[result.question_key] = result.answer
         self.current_question_index = result.new_index
-
         return self.get_status()
 
     @workflow.update
     async def provide_clarifications(
         self, input: ClarificationInput
     ) -> ResearchInteractionDict:
-        """Provide all clarification responses at once (legacy compatibility)"""
+        """Provide all clarification responses at once (legacy compatibility)."""
         workflow.logger.info(
             f"Received {len(input.responses)} clarification responses: {input.responses}"
         )
-
         self.clarification_responses = input.responses
-        # Mark all questions as answered
         self.current_question_index = len(self.clarification_questions)
-
         return self.get_status()
 
     @provide_single_clarification.validator
     def validate_single_clarification(self, input: SingleClarificationInput) -> None:
         if not input.answer.strip():
             raise ValueError("Answer cannot be empty")
-
         if not self.original_query:
             raise ValueError("No active research interaction")
-
         if not self.clarification_questions or len(self.clarification_responses) >= len(
             self.clarification_questions
         ):
@@ -311,14 +355,11 @@ class InteractiveResearchWorkflow:
     def validate_provide_clarifications(self, input: ClarificationInput) -> None:
         if not input.responses:
             raise ValueError("Clarification responses cannot be empty")
-
         if not self.original_query:
             raise ValueError("No active research interaction")
-
         if not self.clarification_questions:
             raise ValueError("Not awaiting clarifications")
 
     @workflow.signal
     async def end_workflow_signal(self) -> None:
-        """Signal to end the workflow"""
         self.workflow_ended = True
