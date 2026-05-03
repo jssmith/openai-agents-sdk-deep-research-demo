@@ -289,11 +289,30 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
-        function addStatusMessage(statusId) {
-            if (renderedStatusMessages.has(statusId)) return;
+        // Track rendered status-card DOM nodes by id so that if progress_plan
+        // arrives after a card was rendered with fallback text, we can update
+        // the title/detail in place instead of leaving stale labels.
+        const renderedStatusNodes = new Map();
 
+        function statusCardHTML(status) {
+            return `
+                <span class="agent-status-icon">✓</span>
+                <span>
+                    <strong>${escapeHTML(status.title)}</strong>
+                    <span class="agent-status-detail">${escapeHTML(status.detail)}</span>
+                </span>
+            `;
+        }
+
+        function addStatusMessage(statusId) {
             const status = statusMessageFor(statusId);
             if (!status) return;
+
+            const existing = renderedStatusNodes.get(statusId);
+            if (existing) {
+                existing.innerHTML = statusCardHTML(status);
+                return;
+            }
 
             renderedStatusMessages.add(statusId);
 
@@ -302,14 +321,9 @@
 
             const statusDiv = document.createElement('div');
             statusDiv.className = 'agent-status-message';
-            statusDiv.innerHTML = `
-                <span class="agent-status-icon">✓</span>
-                <span>
-                    <strong>${escapeHTML(status.title)}</strong>
-                    <span class="agent-status-detail">${escapeHTML(status.detail)}</span>
-                </span>
-            `;
+            statusDiv.innerHTML = statusCardHTML(status);
 
+            renderedStatusNodes.set(statusId, statusDiv);
             messageDiv.appendChild(statusDiv);
             chatContainer.appendChild(messageDiv);
             keepSpinnerAtBottom();
@@ -471,6 +485,8 @@
         function resetChat() {
             chatContainer.innerHTML = '';
             renderedStatusMessages.clear();
+            renderedStatusNodes.clear();
+            agentProgressPlan = null;
             reportRendered = false;
             document.body.classList.remove('report-open');
         }
@@ -604,9 +620,12 @@
                 if (generation !== pollGeneration) return;
 
                 // The orchestrator commits a topic-specific progress_plan on
-                // its first tool call; pick it up as soon as it arrives.
-                if (status.progress_plan) {
+                // its first tool call; pick it up as soon as it arrives and
+                // refresh any cards that were already rendered with fallback
+                // text so they pick up the agent's labels.
+                if (status.progress_plan && status.progress_plan !== agentProgressPlan) {
                     agentProgressPlan = status.progress_plan;
+                    renderedStatusNodes.forEach((_, id) => addStatusMessage(id));
                 }
 
                 if (
