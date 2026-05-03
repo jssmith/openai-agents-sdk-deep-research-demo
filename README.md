@@ -29,13 +29,13 @@ This example is designed to be similar to the OpenAI Cookbook: [Introduction to 
 
 **Agents:**
 
-- **Research Orchestrator** (`research_agents/orchestrator_agent.py`): top-level
+- **Orchestrator Agent** (`research_agents/orchestrator_agent.py`): top-level
   agent that drives the entire workflow via tool calls — eliciting clarifying
   questions from the user, dispatching parallel research workers, querying the
   data warehouse, generating a thematic image, and emitting the final report
   as a structured response.
-- **Research Worker** (`research_agents/research_worker_agent.py`): small
-  sub-agent the orchestrator fans out for each parallel subquery. Uses
+- **Research Worker Agent** (`research_agents/research_worker_agent.py`):
+  small sub-agent the orchestrator fans out for each parallel subquery. Uses
   `WebSearchTool` and returns a `SearchSummary`.
 
 (The original demo's separate Triage / Clarifying / Instruction / Planner /

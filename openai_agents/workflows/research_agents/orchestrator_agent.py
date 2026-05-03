@@ -252,7 +252,7 @@ async def generate_research_image(
 
 def new_orchestrator_agent() -> Agent:
     return Agent(
-        name="ResearchOrchestrator",
+        name="OrchestratorAgent",
         instructions=SYSTEM_PROMPT,
         model=os.getenv("ORCHESTRATOR_MODEL", "gpt-5"),
         model_settings=ModelSettings(
