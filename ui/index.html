@@ -174,6 +174,9 @@
             // pushState avoids a reload; relative path keeps origin and other params intact.
             history.pushState({ workflowId: id || null }, '', url.pathname + url.search);
         }
+        // Fallback text used only when the orchestrator hasn't yet committed a
+        // topic-specific progress_plan. As soon as the agent's first tool call
+        // returns, polled status.progress_plan replaces these.
         const AGENT_STATUS_MESSAGES = [
             {
                 id: 'planning',
@@ -182,8 +185,8 @@
             },
             {
                 id: 'collecting',
-                title: 'Collecting neighborhood indicators',
-                detail: 'Foot traffic, business activity, and transit access.',
+                title: 'Gathering evidence',
+                detail: 'Web research, supporting data, and a research visual.',
             },
             {
                 id: 'writing',
@@ -191,6 +194,21 @@
                 detail: 'Summary, visualization, and markdown are being assembled.',
             },
         ];
+
+        // Latest progress_plan from the polled status; updated as the agent
+        // commits topic-specific labels.
+        let agentProgressPlan = null;
+
+        function statusMessageFor(id) {
+            if (agentProgressPlan && agentProgressPlan[id]) {
+                return {
+                    id,
+                    title: agentProgressPlan[id].title,
+                    detail: agentProgressPlan[id].detail,
+                };
+            }
+            return AGENT_STATUS_MESSAGES.find((m) => m.id === id);
+        }
 
         function setAgentStatus(text, complete = false) {
             agentStatus.innerHTML = `
@@ -274,7 +292,7 @@
         function addStatusMessage(statusId) {
             if (renderedStatusMessages.has(statusId)) return;
 
-            const status = AGENT_STATUS_MESSAGES.find((item) => item.id === statusId);
+            const status = statusMessageFor(statusId);
             if (!status) return;
 
             renderedStatusMessages.add(statusId);
@@ -334,7 +352,7 @@
 
         function finishAgentStatusMessages() {
             clearStatusTimers();
-            AGENT_STATUS_MESSAGES.forEach((status) => addStatusMessage(status.id));
+            ['planning', 'collecting', 'writing'].forEach((id) => addStatusMessage(id));
             setAgentStatus('Report ready', true);
         }
 
@@ -585,6 +603,12 @@
                 const status = await client.getStatus(workflowId);
                 if (generation !== pollGeneration) return;
 
+                // The orchestrator commits a topic-specific progress_plan on
+                // its first tool call; pick it up as soon as it arrives.
+                if (status.progress_plan) {
+                    agentProgressPlan = status.progress_plan;
+                }
+
                 if (
                   (status.status === 'awaiting_clarifications' && status.current_question) ||
                   status.status === 'collecting_answers') {
@@ -671,6 +695,9 @@
 
             try {
                 const status = await client.getStatus(workflowId);
+                if (status.progress_plan) {
+                    agentProgressPlan = status.progress_plan;
+                }
                 currentQuestionIndex = status.current_question_index || 0;
                 renderTranscript(status);
 

@@ -95,6 +95,11 @@ class ResearchInteractionDict(BaseModel):
     # render its progress timeline against real backend state instead of
     # hardcoded timers. Values: None | "planning" | "collecting" | "writing".
     current_activity: str | None = None
+    # Topic-specific progress labels the agent committed during its first
+    # tool call. Shape: {planning: {title, detail}, collecting: {...}, writing:
+    # {...}}. None if the agent hasn't issued the plan yet (UI falls back to
+    # hardcoded text).
+    progress_plan: dict[str, Dict[str, str]] | None = None
 
     def get_current_question(self) -> str | None:
         """Get the current question that needs an answer"""

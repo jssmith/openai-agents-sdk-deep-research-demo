@@ -21,10 +21,6 @@ from pydantic import BaseModel, Field
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-from openai_agents.workflows.demo_failure_activities import (
-    SearchBranchRequest,
-    prepare_web_search_branch,
-)
 from openai_agents.workflows.enterprise_data_activities import (
     DataWarehouseRequest,
     DataWarehouseResult,
@@ -48,33 +44,42 @@ SYSTEM_PROMPT = (
     "and you cannot complete the task by skipping any step.\n"
     "\n"
     "1. ask_user_clarifications: ask 1-2 clarifying questions that narrow the user's "
-    "intent. Keep this short - one question is fine if the query is already clear. "
-    "Wait for the answers (the tool returns them as a dict).\n"
+    "intent (one question is fine if the query is already clear) AND commit a "
+    "progress_plan with three short, topic-specific status cards the UI will "
+    "show through the run:\n"
+    "   - planning: 'title' is a 4-7 word phrase about what we're about to research; "
+    "'detail' is one sentence about clarifying scope before kicking off agents.\n"
+    "   - collecting: 'title' is a 4-7 word phrase about gathering evidence on the "
+    "topic; 'detail' is one sentence naming the angles being researched and that "
+    "internal data + a research visual are pulled in parallel.\n"
+    "   - writing: 'title' is a 4-7 word phrase about synthesizing the report; "
+    "'detail' is one sentence describing the deliverable.\n"
+    "Be concrete to the topic; do not use generic placeholders. Wait for the "
+    "answers (the tool returns them as a dict).\n"
     "\n"
     "2. run_parallel_research: decompose the clarified query into 4-6 focused subqueries "
     "and dispatch them in parallel. Each subquery must explore a distinct angle of the "
     "topic. The tool returns a list of SearchSummary objects.\n"
     "\n"
-    "3. query_data_warehouse: look up proprietary internal context for the topic.\n"
+    "3. query_data_warehouse AND generate_research_image: issue these two tool calls "
+    "TOGETHER in the same turn so they execute in parallel - they are independent. "
+    "query_data_warehouse takes a concise query string. generate_research_image takes "
+    "a 2-sentence prompt focused on atmosphere and metaphor; never request text, "
+    "labels, charts, or numbers in the image.\n"
     "\n"
-    "4. generate_research_image: create an evocative thematic image for the report. "
-    "Provide a 2-sentence visual description focused on atmosphere and metaphor. "
-    "Never request text, labels, charts, or numbers in the image.\n"
-    "\n"
-    "After all four tools have run, you finish by emitting a structured "
+    "After all of these have run, you finish by emitting a structured "
     "FinalizeReportRequest as your final response. This is the only valid way to "
     "complete the task - the runtime parses your final response into that schema. "
     "Include every field: the report you wrote, image_path, warehouse_summary, and "
     "search_summaries. The system requires all of them.\n"
     "\n"
     "Report style guidance for the final response:\n"
-    "- markdown_report: clear, executive-ready markdown. 450-650 words. Start with a "
-    "single H1 (`# ...`) naming the topic in 4-8 words (no trailing period). Then a "
-    "short introduction with context, 3-5 sections with clear headings, direct analysis "
-    "and ranked takeaways where useful, specific examples and data points where "
-    "available, and a concise conclusion with implications. Favor substance over length. "
-    "Avoid filler, repeated caveats, and generic background.\n"
-    "- short_summary: 2-3 sentences capturing the headline findings.\n"
+    "- markdown_report: tight, executive-ready markdown. 150-200 words MAX. Start with "
+    "a single H1 (`# ...`) naming the topic in 4-8 words (no trailing period). Then a "
+    "1-2 sentence intro, 2-3 short sections with clear headings (each section is "
+    "2-3 sentences), and a one-line conclusion. Favor substance over length. No "
+    "filler, no repeated caveats, no generic background.\n"
+    "- short_summary: 1-2 sentences capturing the headline findings.\n"
     "- follow_up_questions: 3 suggested topics to research further.\n"
     "\n"
     "Be efficient. Do not call tools out of order or repeat them. Do not narrate to the "
@@ -87,10 +92,31 @@ SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 
+class ProgressLabel(BaseModel):
+    """A status card shown in the UI during one phase of the run."""
+
+    title: Annotated[str, Field(min_length=1, max_length=80)]
+    detail: Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class ProgressPlan(BaseModel):
+    """Topic-specific labels for the three phases of the run.
+
+    The agent fills these in based on the user's query so the UI shows progress
+    text that matches the actual research, not a generic boilerplate.
+    """
+
+    planning: ProgressLabel
+    collecting: ProgressLabel
+    writing: ProgressLabel
+
+
 class ClarificationsRequest(BaseModel):
-    """Questions the orchestrator wants the user to answer."""
+    """Questions the orchestrator wants the user to answer, plus the
+    topic-specific progress labels the UI will display through the run."""
 
     questions: Annotated[list[str], Field(min_length=1, max_length=2)]
+    progress_plan: ProgressPlan
 
 
 class ParallelResearchRequest(BaseModel):
@@ -126,12 +152,15 @@ async def ask_user_clarifications(
     ctx: RunContextWrapper[Any],
     request: ClarificationsRequest,
 ) -> dict[str, str]:
-    """Ask the user 2-3 clarifying questions and wait for their answers.
+    """Ask the user 1-2 clarifying questions and commit topic-specific progress
+    labels for the UI to display through the rest of the run. Wait for answers.
 
     Returns a mapping of question -> answer.
     """
     wf = ctx.context
-    return await wf.tool_ask_user_clarifications(request.questions)
+    return await wf.tool_ask_user_clarifications(
+        request.questions, request.progress_plan
+    )
 
 
 @function_tool
@@ -149,20 +178,24 @@ async def query_data_warehouse(
     ctx: RunContextWrapper[Any],
     query: str,
 ) -> str:
-    """Look up proprietary internal context from the enterprise data warehouse."""
+    """Look up proprietary internal context from the enterprise data warehouse.
+
+    Issue this in parallel with generate_research_image - they are independent
+    and the runtime will execute concurrent tool calls in the same turn together.
+    """
     request = DataWarehouseRequest(query=query)
     result: DataWarehouseResult = await workflow.execute_activity(
         fetch_data_warehouse_context,
         request,
-        start_to_close_timeout=timedelta(seconds=30),
-        # Generous schedule_to_close so the retry survives a coincident worker
-        # outage during the failure-recovery demo path.
-        schedule_to_close_timeout=timedelta(seconds=300),
+        start_to_close_timeout=timedelta(seconds=15),
+        # Schedule_to_close caps total time across retries; sized for up to 8
+        # retries of ~0.6s + 4s gap = ~37s, plus success.
+        schedule_to_close_timeout=timedelta(seconds=120),
         retry_policy=RetryPolicy(
             initial_interval=timedelta(seconds=4),
             backoff_coefficient=1.0,
             maximum_interval=timedelta(seconds=4),
-            maximum_attempts=2,
+            maximum_attempts=10,
         ),
     )
     return (
@@ -180,7 +213,8 @@ async def generate_research_image(
     """Generate an evocative thematic image. Returns the saved image_path on success.
 
     The prompt should be 2 sentences focused on atmosphere/metaphor and must end with
-    "The image contains no text, numbers, or labels."
+    "The image contains no text, numbers, or labels." Issue this in parallel with
+    query_data_warehouse - the runtime executes concurrent tool calls in one turn.
     """
     wf = ctx.context
     result: ImageGenerationResult = await workflow.execute_activity(
@@ -189,7 +223,6 @@ async def generate_research_image(
         start_to_close_timeout=timedelta(seconds=180),
     )
     if not result.success or not result.image_file_path:
-        # Surface a clear error to the agent so it can retry with a different prompt.
         raise RuntimeError(
             f"Image generation failed: {result.error_message or 'no path returned'}"
         )
@@ -206,38 +239,6 @@ async def generate_research_image(
 
 
 # ---------------------------------------------------------------------------
-# Helper used by the workflow (kept here to colocate failure-injection setup)
-# ---------------------------------------------------------------------------
-
-
-async def prepare_first_search_branch(query: str, total_branches: int) -> None:
-    """Run the demo's prepare_web_search_branch activity for branch 0.
-
-    Kept as an explicit setup step rather than a tool so the demo failure beat
-    (DEMO_SEARCH_BRANCH_PROCESS_FAILURES SIGKILLs the worker on attempt 1) is
-    not exposed in the orchestrator's prompt surface.
-    """
-    await workflow.execute_activity(
-        prepare_web_search_branch,
-        SearchBranchRequest(
-            query_count=total_branches,
-            search_index=0,
-            search_query=query,
-        ),
-        # start_to_close must outlast DEMO_SEARCH_BRANCH_FAILURE_AFTER_SECONDS
-        # (default 20s) so the activity can actually SIGKILL the worker.
-        start_to_close_timeout=timedelta(seconds=45),
-        schedule_to_close_timeout=timedelta(seconds=180),
-        retry_policy=RetryPolicy(
-            initial_interval=timedelta(seconds=2),
-            backoff_coefficient=1.0,
-            maximum_interval=timedelta(seconds=2),
-            maximum_attempts=2,
-        ),
-    )
-
-
-# ---------------------------------------------------------------------------
 # Agent factory
 # ---------------------------------------------------------------------------
 
@@ -249,7 +250,7 @@ def new_orchestrator_agent() -> Agent:
         model=os.getenv("ORCHESTRATOR_MODEL", "gpt-5"),
         model_settings=ModelSettings(
             reasoning=Reasoning(
-                effort=os.getenv("ORCHESTRATOR_REASONING_EFFORT", "low")
+                effort=os.getenv("ORCHESTRATOR_REASONING_EFFORT", "minimal")
             ),
             verbosity=os.getenv("ORCHESTRATOR_VERBOSITY", "low"),
         ),

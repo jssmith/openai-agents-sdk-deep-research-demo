@@ -3,13 +3,9 @@ set -euo pipefail
 
 # Demo-only: SIGKILL the running clean-preset worker. Targets the pid stored in
 # DEMO_WORKER_PID_FILE (defaults to .demo-worker-clean.pid, matching what
-# scripts/start-clean-worker writes). Use this during the failure-recovery moment
-# of the talk to demonstrate Temporal resuming work after a real process death.
-#
-# The worker activity also has an auto-kill timer (DEMO_SEARCH_BRANCH_PROCESS_FAILURES=1
-# fires SIGKILL after DEMO_SEARCH_BRANCH_FAILURE_AFTER_SECONDS seconds). Running this
-# script before the timer fires gives a visible cause for the audience; if the
-# presenter is too slow, the auto-kill is the safety net.
+# scripts/start-clean-worker writes). Use this during the failure-recovery
+# moment of the talk to demonstrate Temporal resuming work after a real
+# process death.
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd -- "$script_dir/.." && pwd)"

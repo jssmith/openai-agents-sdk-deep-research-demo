@@ -16,9 +16,6 @@ from temporalio.worker import Worker
 from openai_agents.workflows.enterprise_data_activities import (
     fetch_data_warehouse_context,
 )
-from openai_agents.workflows.demo_failure_activities import (
-    prepare_web_search_branch,
-)
 from openai_agents.workflows.image_generation_activity import generate_image
 from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchWorkflow,
@@ -38,12 +35,8 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     pid_file = Path(os.getenv("DEMO_WORKER_PID_FILE", ".demo-worker.pid"))
     pid_file.write_text(str(os.getpid()))
-    # Default to 1 to keep the crash-recovery demo path (DEMO_SEARCH_BRANCH_*) responsive:
-    # with low concurrency, fewer in-flight activities have to age out on timeout when the
-    # worker SIGKILLs itself. The clean-demo path opts into higher concurrency via
-    # scripts/start-clean-worker (which exports DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES=4).
     max_concurrent_activities = int(
-        os.getenv("DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES", "1")
+        os.getenv("DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES", "4")
     )
 
     config = ClientConfig.load_client_connect_config()
@@ -59,8 +52,12 @@ async def main():
         plugins=[
             OpenAIAgentsPlugin(
                 model_params=ModelActivityParameters(
-                    start_to_close_timeout=timedelta(seconds=200),
-                    schedule_to_close_timeout=timedelta(seconds=500),
+                    # 30s is enough for typical gpt-5 reasoning turns and
+                    # surfaces hung LLM calls quickly in the demo.
+                    start_to_close_timeout=timedelta(seconds=30),
+                    # schedule_to_close caps total time across retries; sized
+                    # for a few retries of a hung call before giving up.
+                    schedule_to_close_timeout=timedelta(seconds=180),
                     retry_policy=RetryPolicy(
                         backoff_coefficient=2.0,
                         initial_interval=timedelta(seconds=1),
@@ -85,7 +82,6 @@ async def main():
         activities=[
             generate_pdf,
             generate_image,
-            prepare_web_search_branch,
             fetch_data_warehouse_context,
             process_clarification,
         ],

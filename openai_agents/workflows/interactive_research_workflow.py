@@ -25,8 +25,8 @@ with workflow.unsafe.imports_passed_through():
 
     from openai_agents.workflows.research_agents.orchestrator_agent import (
         FinalizeReportRequest,
+        ProgressPlan,
         new_orchestrator_agent,
-        prepare_first_search_branch,
     )
     from openai_agents.workflows.research_agents.research_models import (
         ClarificationInput,
@@ -106,13 +106,17 @@ class InteractiveResearchWorkflow:
         # surfaced to the UI through get_status so the progress timeline tracks
         # real backend state.
         self.current_activity: str | None = None
+        # Topic-specific progress labels the agent commits during its first
+        # tool call (ask_user_clarifications). Surfaced to the UI; falls back
+        # to hardcoded text in the frontend if absent.
+        self.progress_plan: ProgressPlan | None = None
 
     # ------------------------------------------------------------------
     # Helpers used by orchestrator tools (called from agent context)
     # ------------------------------------------------------------------
 
     async def tool_ask_user_clarifications(
-        self, questions: list[str]
+        self, questions: list[str], progress_plan: ProgressPlan
     ) -> dict[str, str]:
         """Workflow-state tool: publish clarifying questions and wait for answers.
 
@@ -120,7 +124,11 @@ class InteractiveResearchWorkflow:
         and `clarification_responses` is empty, the get_status query reports
         "awaiting_clarifications" and the UI shows the first question. Each answer
         comes back through the existing provide_single_clarification update.
+
+        Also commits the topic-specific progress_plan the UI will surface as it
+        moves through planning/collecting/writing.
         """
+        self.progress_plan = progress_plan
         self.clarification_questions = list(questions)
         self.clarification_responses = {}
         self.current_question_index = 0
@@ -145,14 +153,11 @@ class InteractiveResearchWorkflow:
     ) -> list[SearchSummary]:
         """Workflow-state tool: fan out research worker sub-agents in parallel.
 
-        Runs the demo's prepare_web_search_branch activity for branch 0 first
-        (preserves the SIGKILL failure-recovery beat), then dispatches one
-        research_worker_agent per subquery via asyncio.gather.
+        Dispatches one research_worker_agent per subquery via asyncio.gather.
         """
         if not subqueries:
             return []
         self.current_activity = "collecting"
-        await prepare_first_search_branch(subqueries[0], len(subqueries))
 
         worker = new_research_worker_agent()
 
@@ -289,6 +294,9 @@ class InteractiveResearchWorkflow:
         else:
             status = "pending"
 
+        plan_dict = (
+            self.progress_plan.model_dump() if self.progress_plan is not None else None
+        )
         return ResearchInteractionDict(
             original_query=self.original_query,
             clarification_questions=self.clarification_questions,
@@ -298,6 +306,7 @@ class InteractiveResearchWorkflow:
             status=status,
             research_completed=self.research_completed,
             current_activity=self.current_activity,
+            progress_plan=plan_dict,
         )
 
     @workflow.update
