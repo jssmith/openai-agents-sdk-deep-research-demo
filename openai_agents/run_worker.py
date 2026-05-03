@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from temporalio.client import Client
 from temporalio.common import RetryPolicy
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
-from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
@@ -70,7 +69,6 @@ async def main():
                 )
             ),
         ],
-        data_converter=pydantic_data_converter,
     )
 
     print(

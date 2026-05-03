@@ -17,6 +17,9 @@ from datetime import timedelta
 from temporalio import activity, workflow
 from temporalio.exceptions import ApplicationError
 
+# Read at module-import time so the workflow body stays deterministic.
+ORCHESTRATOR_MAX_TURNS = int(os.getenv("ORCHESTRATOR_MAX_TURNS", "30"))
+
 with workflow.unsafe.imports_passed_through():
     from agents import Runner
 
@@ -226,7 +229,7 @@ class InteractiveResearchWorkflow:
                 orchestrator,
                 self.original_query,
                 context=self,
-                max_turns=int(os.getenv("ORCHESTRATOR_MAX_TURNS", "30")),
+                max_turns=ORCHESTRATOR_MAX_TURNS,
             )
         except Exception as e:
             workflow.logger.exception(f"Orchestrator agent failed: {e}")

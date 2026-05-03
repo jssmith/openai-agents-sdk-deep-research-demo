@@ -23,7 +23,10 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from temporalio.client import Client
-from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.contrib.openai_agents._temporal_openai_agents import (
+    OpenAIPayloadConverter,
+)
+from temporalio.converter import DataConverter
 from temporalio.envconfig import ClientConfig
 
 from openai_agents.workflows.interactive_research_workflow import (
@@ -82,7 +85,7 @@ async def get_temporal_client() -> Client:
 
     temporal_client = await Client.connect(
         **temporal_config,
-        data_converter=pydantic_data_converter,
+        data_converter=DataConverter(payload_converter_class=OpenAIPayloadConverter),
     )
     return temporal_client
 
