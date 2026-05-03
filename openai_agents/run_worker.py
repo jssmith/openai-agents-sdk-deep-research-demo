@@ -19,7 +19,6 @@ from openai_agents.workflows.enterprise_data_activities import (
 from openai_agents.workflows.image_generation_activity import generate_image
 from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchWorkflow,
-    process_clarification,
 )
 from openai_agents.workflows.pdf_generation_activity import generate_pdf
 
@@ -83,7 +82,6 @@ async def main():
             generate_pdf,
             generate_image,
             fetch_data_warehouse_context,
-            process_clarification,
         ],
     )
     await worker.run()

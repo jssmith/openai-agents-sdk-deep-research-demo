@@ -2,9 +2,11 @@
 
 Agentic version: a single orchestrator agent runs inside the workflow and drives
 every stage (clarifications, parallel research sub-agents, data warehouse, image
-generation, report writing, finalization) via tool calls. Workflow state is
-mutated through tools so the UI's polling contract (status field, clarification
-question index, completed report) is preserved unchanged.
+generation, report writing, finalization) via tool calls.
+
+User input lands through a generic elicitation primitive: the agent calls
+elicit_user once per question, the workflow publishes a single pending
+elicitation, and the FE-BE contract delivers the response back via an update.
 """
 
 from __future__ import annotations
@@ -12,9 +14,8 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
-from datetime import timedelta
 
-from temporalio import activity, workflow
+from temporalio import workflow
 from temporalio.exceptions import ApplicationError
 
 # Read at module-import time so the workflow body stays deterministic.
@@ -29,9 +30,9 @@ with workflow.unsafe.imports_passed_through():
         new_orchestrator_agent,
     )
     from openai_agents.workflows.research_agents.research_models import (
-        ClarificationInput,
+        Elicitation,
+        ElicitationResponseInput,
         ResearchInteractionDict,
-        SingleClarificationInput,
         UserQueryInput,
     )
     from openai_agents.workflows.research_agents.research_worker_agent import (
@@ -39,43 +40,6 @@ with workflow.unsafe.imports_passed_through():
         new_research_worker_agent,
     )
     from openai_agents.workflows.research_agents.writer_agent import ReportData
-
-
-@dataclass
-class ProcessClarificationInput:
-    """Input for clarification processing activity."""
-
-    answer: str
-    current_question_index: int
-    current_question: str | None
-    total_questions: int
-
-
-@dataclass
-class ProcessClarificationResult:
-    """Result from clarification processing activity."""
-
-    question_key: str
-    answer: str
-    new_index: int
-
-
-@activity.defn
-async def process_clarification(
-    input: ProcessClarificationInput,
-) -> ProcessClarificationResult:
-    """Process a single clarification answer."""
-    activity.logger.info(
-        f"Processing clarification answer {input.current_question_index + 1}/{input.total_questions}: "
-        f"'{input.answer}' for question: '{input.current_question}'"
-    )
-
-    question_key = f"question_{input.current_question_index}"
-    return ProcessClarificationResult(
-        question_key=question_key,
-        answer=input.answer,
-        new_index=input.current_question_index + 1,
-    )
 
 
 @dataclass
@@ -91,70 +55,77 @@ class InteractiveResearchResult:
 @workflow.defn
 class InteractiveResearchWorkflow:
     def __init__(self) -> None:
-        # State observed by the get_status query and the UI.
         self.original_query: str | None = None
-        self.clarification_questions: list[str] = []
-        self.clarification_responses: dict[str, str] = {}
-        self.current_question_index: int = 0
         self.report_data: ReportData | None = None
         self.research_image_path: str | None = None
         self.research_image_description: str | None = None
         self.research_completed: bool = False
         self.workflow_ended: bool = False
         self.research_initialized: bool = False
-        # Coarse phase the orchestrator is currently in. Mutated by tool bodies;
-        # surfaced to the UI through get_status so the progress timeline tracks
-        # real backend state.
+        # Coarse phase the orchestrator is currently in. planning | collecting
+        # | writing | None. Surfaced to the UI via get_status.
         self.current_activity: str | None = None
-        # Topic-specific progress labels the agent commits during its first
-        # tool call (ask_user_clarifications). Surfaced to the UI; falls back
-        # to hardcoded text in the frontend if absent.
+        # Topic-specific progress labels the agent commits on its first
+        # elicit_user call. Falls back to hardcoded UI text if absent.
         self.progress_plan: ProgressPlan | None = None
+        # Generic elicitation contract: at most one pending request at a time;
+        # answered ones move into completed_elicitations.
+        self.pending_elicitation: Elicitation | None = None
+        self.completed_elicitations: list[Elicitation] = []
+        self._elicitation_counter: int = 0
 
     # ------------------------------------------------------------------
     # Helpers used by orchestrator tools (called from agent context)
     # ------------------------------------------------------------------
 
-    async def tool_ask_user_clarifications(
-        self, questions: list[str], progress_plan: ProgressPlan
-    ) -> dict[str, str]:
-        """Workflow-state tool: publish clarifying questions and wait for answers.
+    async def tool_elicit_user(
+        self,
+        message: str,
+        progress_plan: ProgressPlan | None,
+    ) -> str:
+        """Workflow-state tool: publish ONE elicitation and wait for the answer.
 
-        Drives the existing UI flow: as soon as `clarification_questions` is non-empty
-        and `clarification_responses` is empty, the get_status query reports
-        "awaiting_clarifications" and the UI shows the first question. Each answer
-        comes back through the existing provide_single_clarification update.
-
-        Also commits the topic-specific progress_plan the UI will surface as it
-        moves through planning/collecting/writing.
+        First call must include progress_plan (the agent's commitment to the
+        UI's progress timeline). Subsequent calls leave it None and reuse the
+        plan that was already stored.
         """
-        self.progress_plan = progress_plan
-        self.clarification_questions = list(questions)
-        self.clarification_responses = {}
-        self.current_question_index = 0
+        if self.progress_plan is None:
+            if progress_plan is None:
+                raise ApplicationError(
+                    "progress_plan is required on the first elicit_user call"
+                )
+            self.progress_plan = progress_plan
+
+        el_id = f"el_{self._elicitation_counter}"
+        self._elicitation_counter += 1
+        self.pending_elicitation = Elicitation(id=el_id, message=message)
 
         await workflow.wait_condition(
             lambda: self.workflow_ended
-            or len(self.clarification_responses) >= len(self.clarification_questions)
+            or (
+                self.pending_elicitation is not None
+                and self.pending_elicitation.response is not None
+            )
         )
 
         if self.workflow_ended:
-            raise ApplicationError("Workflow ended by user while awaiting clarifications")
+            raise ApplicationError("Workflow ended by user while awaiting elicitation")
 
-        return {
-            self.clarification_questions[i]: self.clarification_responses[
-                f"question_{i}"
-            ]
-            for i in range(len(self.clarification_questions))
-        }
+        answered = self.pending_elicitation
+        assert answered is not None and answered.response is not None
+        self.completed_elicitations.append(answered)
+        self.pending_elicitation = None
+        return answered.response
 
     async def tool_run_parallel_research(
         self, subqueries: list[str]
     ) -> list[SearchSummary]:
-        """Workflow-state tool: fan out research worker sub-agents in parallel.
-
-        Dispatches one research_worker_agent per subquery via asyncio.gather.
-        """
+        """Workflow-state tool: fan out research worker sub-agents in parallel."""
+        if len(self.completed_elicitations) < 2:
+            raise ApplicationError(
+                "Must call elicit_user twice before run_parallel_research; "
+                f"only {len(self.completed_elicitations)} elicitation(s) completed so far"
+            )
         if not subqueries:
             return []
         self.current_activity = "collecting"
@@ -184,9 +155,6 @@ class InteractiveResearchWorkflow:
         """Workflow-state tool helper: mark the workflow complete with the report."""
         self.current_activity = "writing"
         self.report_data = report
-        # Trust whatever the agent passed for the image_path. set_image was
-        # already called by generate_research_image, but the agent may have
-        # carried a different path through finalize_report (e.g. via cache).
         self.research_image_path = image_path
         self.research_completed = True
 
@@ -213,7 +181,6 @@ class InteractiveResearchWorkflow:
         self, initial_query: str | None = None, use_clarifications: bool = True
     ) -> InteractiveResearchResult:
         """Long-running interactive workflow driven by the orchestrator agent."""
-        # Wait for the start_research update (or an end signal).
         await workflow.wait_condition(
             lambda: self.workflow_ended or self.research_initialized
         )
@@ -245,8 +212,6 @@ class InteractiveResearchWorkflow:
                 "Research ended by user", "Research workflow ended by user"
             )
 
-        # The orchestrator's terminal action is emitting a structured
-        # FinalizeReportRequest as its final response. Validate and apply.
         final = run_result.final_output_as(FinalizeReportRequest)
         report = ReportData(
             short_summary=final.short_summary,
@@ -263,32 +228,17 @@ class InteractiveResearchWorkflow:
         )
 
     # ------------------------------------------------------------------
-    # Queries / updates / signals (UI contract - shape preserved)
+    # Queries / updates / signals
     # ------------------------------------------------------------------
-
-    def _get_current_question(self) -> str | None:
-        if self.current_question_index >= len(self.clarification_questions):
-            return None
-        return self.clarification_questions[self.current_question_index]
-
-    def _has_more_questions(self) -> bool:
-        return self.current_question_index < len(self.clarification_questions)
 
     @workflow.query
     def get_status(self) -> ResearchInteractionDict:
-        current_question = self._get_current_question()
-
         if self.workflow_ended:
             status = "ended"
         elif self.research_completed:
             status = "completed"
-        elif self.clarification_questions and len(self.clarification_responses) < len(
-            self.clarification_questions
-        ):
-            if len(self.clarification_responses) == 0:
-                status = "awaiting_clarifications"
-            else:
-                status = "collecting_answers"
+        elif self.pending_elicitation is not None:
+            status = "awaiting_user_input"
         elif self.original_query and not self.research_completed:
             status = "researching"
         else:
@@ -299,11 +249,9 @@ class InteractiveResearchWorkflow:
         )
         return ResearchInteractionDict(
             original_query=self.original_query,
-            clarification_questions=self.clarification_questions,
-            clarification_responses=self.clarification_responses,
-            current_question_index=self.current_question_index,
-            current_question=current_question,
             status=status,
+            pending_elicitation=self.pending_elicitation,
+            completed_elicitations=list(self.completed_elicitations),
             research_completed=self.research_completed,
             current_activity=self.current_activity,
             progress_plan=plan_dict,
@@ -311,70 +259,42 @@ class InteractiveResearchWorkflow:
 
     @workflow.update
     async def start_research(self, input: UserQueryInput) -> ResearchInteractionDict:
-        """Start a new research session.
-
-        Just records the query and unblocks the main run loop. The orchestrator
-        agent will drive everything from there - including deciding to ask
-        clarifying questions on its first turn.
-        """
+        """Start a new research session. Records the query and unblocks the run loop."""
         workflow.logger.info(f"Starting research for query: '{input.query}'")
         self.original_query = input.query
         self.research_initialized = True
         return self.get_status()
 
     @workflow.update
-    async def provide_single_clarification(
-        self, input: SingleClarificationInput
+    async def submit_elicitation_response(
+        self, input: ElicitationResponseInput
     ) -> ResearchInteractionDict:
-        """Provide a single clarification response."""
-        current_question = self._get_current_question()
-
-        result = await workflow.execute_activity(
-            process_clarification,
-            ProcessClarificationInput(
-                answer=input.answer,
-                current_question_index=self.current_question_index,
-                current_question=current_question,
-                total_questions=len(self.clarification_questions),
-            ),
-            start_to_close_timeout=timedelta(seconds=30),
-        )
-
-        self.clarification_responses[result.question_key] = result.answer
-        self.current_question_index = result.new_index
+        """Deliver a response to the currently pending elicitation."""
+        if self.pending_elicitation is None:
+            raise ValueError("No elicitation is currently pending")
+        if self.pending_elicitation.id != input.elicitation_id:
+            raise ValueError(
+                f"Pending elicitation id is {self.pending_elicitation.id!r}, "
+                f"got response for {input.elicitation_id!r}"
+            )
+        if not input.response.strip():
+            raise ValueError("Response cannot be empty")
+        # Setting .response unblocks tool_elicit_user via wait_condition.
+        self.pending_elicitation.response = input.response
         return self.get_status()
 
-    @workflow.update
-    async def provide_clarifications(
-        self, input: ClarificationInput
-    ) -> ResearchInteractionDict:
-        """Provide all clarification responses at once (legacy compatibility)."""
-        workflow.logger.info(
-            f"Received {len(input.responses)} clarification responses: {input.responses}"
-        )
-        self.clarification_responses = input.responses
-        self.current_question_index = len(self.clarification_questions)
-        return self.get_status()
-
-    @provide_single_clarification.validator
-    def validate_single_clarification(self, input: SingleClarificationInput) -> None:
-        if not input.answer.strip():
-            raise ValueError("Answer cannot be empty")
-        if not self.original_query:
-            raise ValueError("No active research interaction")
-        if not self.clarification_questions or len(self.clarification_responses) >= len(
-            self.clarification_questions
-        ):
-            raise ValueError("Not collecting clarifications")
-
-    @provide_clarifications.validator
-    def validate_provide_clarifications(self, input: ClarificationInput) -> None:
-        if not input.responses:
-            raise ValueError("Clarification responses cannot be empty")
-        if not self.original_query:
-            raise ValueError("No active research interaction")
-        if not self.clarification_questions:
-            raise ValueError("Not awaiting clarifications")
+    @submit_elicitation_response.validator
+    def validate_submit_elicitation_response(
+        self, input: ElicitationResponseInput
+    ) -> None:
+        if not input.response.strip():
+            raise ValueError("Response cannot be empty")
+        if self.pending_elicitation is None:
+            raise ValueError("No elicitation is currently pending")
+        if self.pending_elicitation.id != input.elicitation_id:
+            raise ValueError(
+                f"Stale elicitation id: pending is {self.pending_elicitation.id!r}"
+            )
 
     @workflow.signal
     async def end_workflow_signal(self) -> None:

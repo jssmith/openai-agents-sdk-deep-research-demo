@@ -41,22 +41,26 @@ class ResearchClient {
         return await response.json();
     }
 
-    async submitAnswer(answer, workflowId = null, currentQuestionIndex = 0) {
+    async submitElicitationResponse(answer, elicitationId, workflowId = null) {
         const id = workflowId || this.workflowId;
         if (!id) {
             throw new Error('No workflow ID available');
         }
+        if (!elicitationId) {
+            throw new Error('Elicitation id required');
+        }
 
-        const response = await fetch(`${this.baseUrl}/api/answer/${id}/${currentQuestionIndex}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ answer })
-        });
+        const response = await fetch(
+            `${this.baseUrl}/api/elicitation/${id}/${encodeURIComponent(elicitationId)}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ answer }),
+            }
+        );
 
         if (!response.ok) {
-            throw new Error('Failed to submit answer');
+            throw new Error('Failed to submit elicitation response');
         }
 
         return await response.json();

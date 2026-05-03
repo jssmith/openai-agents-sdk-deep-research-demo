@@ -34,7 +34,7 @@ from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchWorkflow,
 )
 from openai_agents.workflows.research_agents.research_models import (
-    SingleClarificationInput,
+    ElicitationResponseInput,
     UserQueryInput,
 )
 
@@ -189,66 +189,51 @@ async def get_status(workflow_id: str):
     Get current workflow status.
 
     Returns:
-        workflow_id: Workflow identifier
-        status: Current status (awaiting_clarifications, researching, completed)
-        current_question: The clarification question to display (if awaiting)
-        current_question_index: Index of current question
-        total_questions: Total number of clarification questions
+        workflow_id, status, original_query, current_activity, progress_plan,
+        pending_elicitation (or null), completed_elicitations.
     """
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
     status = await handle.query(InteractiveResearchWorkflow.get_status)
 
-    response = {
+    return {
         "workflow_id": workflow_id,
         "status": status.status,
         "original_query": status.original_query,
-        "clarification_questions": status.clarification_questions or [],
-        "current_question": status.current_question,
-        "current_question_index": status.current_question_index,
-        "total_questions": len(status.clarification_questions or []),
-        "clarification_responses": status.clarification_responses or {},
+        "research_completed": status.research_completed,
         "current_activity": status.current_activity,
         "progress_plan": status.progress_plan,
+        "pending_elicitation": (
+            status.pending_elicitation.model_dump()
+            if status.pending_elicitation is not None
+            else None
+        ),
+        "completed_elicitations": [e.model_dump() for e in status.completed_elicitations],
     }
 
-    if status.status == "awaiting_clarifications":
-        response["current_question"] = status.get_current_question()
 
-    return response
-
-
-@app.post("/api/answer/{workflow_id}/{current_question_index}")
-async def submit_answer(
+@app.post("/api/elicitation/{workflow_id}/{elicitation_id}")
+async def submit_elicitation_response(
     workflow_id: str,
-    current_question_index: int,
+    elicitation_id: str,
     request: AnswerRequest,
 ):
-    """
-    Submit an answer to a clarification question.
-
-    Returns:
-        status: "accepted" if answer was recorded
-        workflow_status: Current workflow status after answer
-        questions_remaining: Number of questions left
-    """
+    """Deliver a response to the workflow's pending elicitation."""
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
 
     await handle.execute_update(
-        InteractiveResearchWorkflow.provide_single_clarification,
-        SingleClarificationInput(
-            question_index=current_question_index, answer=request.answer.strip()
+        InteractiveResearchWorkflow.submit_elicitation_response,
+        ElicitationResponseInput(
+            elicitation_id=elicitation_id,
+            response=request.answer.strip(),
         ),
     )
 
     status = await handle.query(InteractiveResearchWorkflow.get_status)
-
     return {
         "status": "accepted",
         "workflow_status": status.status,
-        "questions_remaining": len(status.clarification_questions or [])
-        - status.current_question_index,
     }
 
 

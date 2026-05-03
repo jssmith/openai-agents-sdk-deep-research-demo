@@ -43,10 +43,13 @@ SYSTEM_PROMPT = (
     "research process by calling tools. You must call them in the following order, "
     "and you cannot complete the task by skipping any step.\n"
     "\n"
-    "1. ask_user_clarifications: ask 1-2 clarifying questions that narrow the user's "
-    "intent (one question is fine if the query is already clear) AND commit a "
-    "progress_plan with three short, topic-specific status cards the UI will "
-    "show through the run:\n"
+    "1. elicit_user: ask the user clarifying questions to narrow their intent. You "
+    "MUST ask EXACTLY TWO questions, one at a time. Call elicit_user with question "
+    "1, wait for the answer, then call elicit_user again with question 2 informed by "
+    "the first answer. Two questions, no more, no fewer - the workflow will reject "
+    "run_parallel_research until both have been asked. On your FIRST elicit_user "
+    "call you MUST also commit a progress_plan: three short, topic-specific status "
+    "cards the UI will show through the run:\n"
     "   - planning: 'title' is a 4-7 word phrase about what we're about to research; "
     "'detail' is one sentence about clarifying scope before kicking off agents.\n"
     "   - collecting: 'title' is a 4-7 word phrase about gathering evidence on the "
@@ -54,8 +57,8 @@ SYSTEM_PROMPT = (
     "internal data + a research visual are pulled in parallel.\n"
     "   - writing: 'title' is a 4-7 word phrase about synthesizing the report; "
     "'detail' is one sentence describing the deliverable.\n"
-    "Be concrete to the topic; do not use generic placeholders. Wait for the "
-    "answers (the tool returns them as a dict).\n"
+    "Be concrete to the topic; do not use generic placeholders. The progress_plan "
+    "argument is OPTIONAL on subsequent elicit_user calls and should be omitted there.\n"
     "\n"
     "2. run_parallel_research: decompose the clarified query into 4-6 focused subqueries "
     "and dispatch them in parallel. Each subquery must explore a distinct angle of the "
@@ -111,12 +114,16 @@ class ProgressPlan(BaseModel):
     writing: ProgressLabel
 
 
-class ClarificationsRequest(BaseModel):
-    """Questions the orchestrator wants the user to answer, plus the
-    topic-specific progress labels the UI will display through the run."""
+class ElicitUserRequest(BaseModel):
+    """One question for the user.
 
-    questions: Annotated[list[str], Field(min_length=1, max_length=2)]
-    progress_plan: ProgressPlan
+    progress_plan is REQUIRED on the first elicit_user call (the workflow
+    rejects subsequent calls until it's been committed) and should be omitted
+    on later ones.
+    """
+
+    message: Annotated[str, Field(min_length=1, max_length=500)]
+    progress_plan: ProgressPlan | None = None
 
 
 class ParallelResearchRequest(BaseModel):
@@ -148,19 +155,19 @@ class FinalizeReportRequest(BaseModel):
 
 
 @function_tool
-async def ask_user_clarifications(
+async def elicit_user(
     ctx: RunContextWrapper[Any],
-    request: ClarificationsRequest,
-) -> dict[str, str]:
-    """Ask the user 1-2 clarifying questions and commit topic-specific progress
-    labels for the UI to display through the rest of the run. Wait for answers.
+    request: ElicitUserRequest,
+) -> str:
+    """Ask the user a single question and wait for their answer.
 
-    Returns a mapping of question -> answer.
+    Each call publishes ONE elicitation, the workflow blocks until the user
+    responds, and the response is returned as a string. Call again if you
+    need a follow-up question; call at most twice total. progress_plan must
+    be set on the first call.
     """
     wf = ctx.context
-    return await wf.tool_ask_user_clarifications(
-        request.questions, request.progress_plan
-    )
+    return await wf.tool_elicit_user(request.message, request.progress_plan)
 
 
 @function_tool
@@ -255,7 +262,7 @@ def new_orchestrator_agent() -> Agent:
             verbosity=os.getenv("ORCHESTRATOR_VERBOSITY", "low"),
         ),
         tools=[
-            ask_user_clarifications,
+            elicit_user,
             run_parallel_research,
             query_data_warehouse,
             generate_research_image,

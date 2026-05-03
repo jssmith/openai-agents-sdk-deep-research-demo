@@ -142,10 +142,10 @@
         const POST_COMPLETE_PLACEHOLDER = 'Start a new research request...';
         
         let workflowId = null;
-        let currentQuestionIndex = 0;
+        let pendingElicitation = null;            // {id, message} or null
+        const renderedElicitationIds = new Set(); // ids of elicitations whose Q has been rendered
         let spinnerStartTime = null;
         let retryCheckInterval = null;
-        let lastRenderedQuestionIndex = null;
         let researchComplete = false;
         let researchingStarted = false;
         let reportRendered = false;
@@ -491,6 +491,7 @@
             chatContainer.innerHTML = '';
             renderedStatusMessages.clear();
             renderedStatusNodes.clear();
+            renderedElicitationIds.clear();
             reportRendered = false;
             document.body.classList.remove('report-open');
         }
@@ -506,8 +507,8 @@
             pollGeneration += 1;
             workflowId = null;
             client.workflowId = null;
-            currentQuestionIndex = 0;
-            lastRenderedQuestionIndex = null;
+            pendingElicitation = null;
+            renderedElicitationIds.clear();
             researchingStarted = false;
             clearStatusTimers();
             clearInterval(retryCheckInterval);
@@ -532,20 +533,21 @@
                 addMessage(status.original_query, true);
             }
 
-            const questions = status.clarification_questions || [];
-            const responses = status.clarification_responses || {};
-
-            questions.forEach((question, index) => {
-                const answer = responses[`question_${index}`];
-                if (answer || index <= status.current_question_index) {
-                    addMessage(question);
+            // Replay completed elicitations as Q/A pairs.
+            const completed = status.completed_elicitations || [];
+            completed.forEach((el) => {
+                addMessage(el.message);
+                if (el.response) {
+                    addMessage(el.response, true);
                 }
-                if (answer) {
-                    addMessage(answer, true);
-                }
+                renderedElicitationIds.add(el.id);
             });
 
-            lastRenderedQuestionIndex = status.current_question_index;
+            // If there's a pending elicitation, render its question.
+            if (status.pending_elicitation) {
+                addMessage(status.pending_elicitation.message);
+                renderedElicitationIds.add(status.pending_elicitation.id);
+            }
         }
 
         // Show/hide spinner
@@ -600,14 +602,19 @@
                     workflowId = result.workflow_id;
                     localStorage.setItem(ACTIVE_WORKFLOW_KEY, workflowId);
                     setWorkflowURL(workflowId);
+                } else if (pendingElicitation) {
+                    // Subsequent submissions answer the current pending elicitation.
+                    await client.submitElicitationResponse(
+                        query, pendingElicitation.id, workflowId
+                    );
+                    pendingElicitation = null;
                 } else {
-                    // Subsequent submissions - answer clarification question
-                    await client.submitAnswer(query, workflowId, currentQuestionIndex);
+                    console.warn('Submit ignored: no pending elicitation to respond to.');
                 }
-                
+
                 // Poll for next status
                 pollStatus();
-                
+
             } catch (error) {
                 console.error('Error:', error);
                 showSpinner(false);
@@ -633,17 +640,13 @@
                     renderedStatusNodes.forEach((_, id) => addStatusMessage(id));
                 }
 
-                if (
-                  (status.status === 'awaiting_clarifications' && status.current_question) ||
-                  status.status === 'collecting_answers') {
-                    currentQuestionIndex = status.current_question_index;
+                if (status.status === 'awaiting_user_input' && status.pending_elicitation) {
+                    pendingElicitation = status.pending_elicitation;
                     setAgentStatus('Needs input');
-
-                    // Hide spinner, show clarification question
                     showSpinner(false);
-                    if (lastRenderedQuestionIndex !== currentQuestionIndex) {
-                        addMessage(status.current_question);
-                        lastRenderedQuestionIndex = currentQuestionIndex;
+                    if (!renderedElicitationIds.has(pendingElicitation.id)) {
+                        addMessage(pendingElicitation.message);
+                        renderedElicitationIds.add(pendingElicitation.id);
                     }
                 } else if (status.status === 'researching') {
                     // First entry into researching: do the one-time setup. Subsequent polls
@@ -722,7 +725,6 @@
                 if (status.progress_plan) {
                     agentProgressPlan = status.progress_plan;
                 }
-                currentQuestionIndex = status.current_question_index || 0;
                 renderTranscript(status);
 
                 if (status.status === 'completed') {
@@ -735,6 +737,11 @@
                     addMessage('I finished the research. The report is ready to review.');
                     addReportCard(result, workflowId);
                     setResearchComplete(true);
+                } else if (status.status === 'awaiting_user_input' && status.pending_elicitation) {
+                    pendingElicitation = status.pending_elicitation;
+                    setAgentStatus('Needs input');
+                    showSpinner(false);
+                    pollStatus();
                 } else if (status.status === 'researching' || status.status === 'pending') {
                     showSpinner(true);
                     document.querySelector('.researching-text').textContent =
@@ -750,8 +757,8 @@
                 setWorkflowURL(null);
                 workflowId = null;
                 client.workflowId = null;
-                currentQuestionIndex = 0;
-                lastRenderedQuestionIndex = null;
+                pendingElicitation = null;
+                renderedElicitationIds.clear();
                 showSpinner(false);
             }
         }
