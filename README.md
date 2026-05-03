@@ -29,13 +29,19 @@ This example is designed to be similar to the OpenAI Cookbook: [Introduction to 
 
 **Agents:**
 
-- **Triage Agent**: Analyzes research queries and determines if clarifications are needed
-- **Clarifying Agent**: Generates follow-up questions for better research parameters
-- **Instruction Agent**: Refines research parameters based on user responses
-- **Planner Agent**: Creates web search plans
-- **Search Agent**: Performs web searches
-- **Writer Agent**: Compiles final research reports
-- **PDF Generator Agent**: Converts markdown reports to professionally formatted PDFs
+- **Research Orchestrator** (`research_agents/orchestrator_agent.py`): top-level
+  agent that drives the entire workflow via tool calls — eliciting clarifying
+  questions from the user, dispatching parallel research workers, querying the
+  data warehouse, generating a thematic image, and emitting the final report
+  as a structured response.
+- **Research Worker** (`research_agents/research_worker_agent.py`): small
+  sub-agent the orchestrator fans out for each parallel subquery. Uses
+  `WebSearchTool` and returns a `SearchSummary`.
+
+(The original demo's separate Triage / Clarifying / Instruction / Planner /
+Writer / PDF Generator agents were folded into the orchestrator's prompt and
+tool surface during the agentic refactor; their files are kept under
+`research_agents/` as legacy and aren't on the active code path.)
 
 ## Prerequisites
 
@@ -144,24 +150,24 @@ Re-position the window divider so that the chat UI is taking up approximately 1/
 <img width="1498" height="807" alt="Side-by-side view of application UI and Temporal UI" src="https://github.com/user-attachments/assets/e236a56c-e0bb-4688-a4a1-5484441bfbae" />
 
 
-**Output:**
+**Output:** the final report (markdown body, summary, follow-up questions, and
+a thematic image) is surfaced in the web UI's report card and on the full
+report page. The workflow's structured result is fetched via the
+`/api/result/{workflow_id}` endpoint; nothing is written to disk by default.
 
-- `research_report.md` - Comprehensive markdown report
-- `pdf_output/research_report.pdf` - Professionally formatted PDF (if PDF generation is available)
-
-**Note:** The interactive workflow may take 2-3 minutes to complete due to web searches and report generation.
+**Note:** the interactive workflow may take 1-3 minutes end-to-end depending
+on web-search latency and how many of the demo's failure-injection beats are
+enabled.
 
 ## Development
 
 ### Code Quality Tools
 
 ```bash
-# Format code
-uv run -m black .
-uv run -m isort .
+# Lint (unused imports / unused locals)
+uv run ruff check --select F401,F841
 
 # Type checking
-uv run -m mypy --check-untyped-defs --namespace-packages .
 uv run pyright .
 ```
 
