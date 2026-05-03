@@ -483,10 +483,14 @@
         }
 
         function resetChat() {
+            // Clears DOM and per-render state that is rebuilt by whatever
+            // calls this. Note: agentProgressPlan is NOT cleared here, since
+            // resumeActiveWorkflow sets the fetched plan before calling
+            // renderTranscript -> resetChat, and the plan needs to survive
+            // that round-trip. startFreshChat clears it explicitly.
             chatContainer.innerHTML = '';
             renderedStatusMessages.clear();
             renderedStatusNodes.clear();
-            agentProgressPlan = null;
             reportRendered = false;
             document.body.classList.remove('report-open');
         }
@@ -511,6 +515,7 @@
             showSpinner(false);
             localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
             setWorkflowURL(null);
+            agentProgressPlan = null;
             resetChat();
             addMessage('What would you like me to research?');
             setAgentStatus('Ready');
