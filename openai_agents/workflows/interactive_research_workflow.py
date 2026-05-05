@@ -200,10 +200,13 @@ class InteractiveResearchWorkflow:
         )
 
     @workflow.run
-    async def run(
-        self, initial_query: str | None = None, use_clarifications: bool = True
-    ) -> InteractiveResearchResult:
-        """Long-running interactive workflow driven by the orchestrator agent."""
+    async def run(self) -> InteractiveResearchResult:
+        """Long-running interactive workflow driven by the orchestrator agent.
+
+        The workflow is started with no input and immediately blocks waiting
+        for the start_research update; the FastAPI backend sends that update
+        with the user's query right after start_workflow.
+        """
         await workflow.wait_condition(
             lambda: self.workflow_ended or self.research_initialized
         )

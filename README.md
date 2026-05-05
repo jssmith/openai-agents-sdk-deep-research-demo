@@ -67,8 +67,12 @@ flowchart TB
 - A Temporal server — either `temporal server start-dev` locally on
   `127.0.0.1:7233` (the default) or [Temporal Cloud](https://temporal.io/cloud)
 - An [OpenAI API key](https://platform.openai.com/api-keys) with access to
-  `gpt-5` and `gpt-image-1` (the orchestrator model and image model are
-  configurable via env vars; see `openai_agents/workflows/research_agents/orchestrator_agent.py`)
+  the orchestrator model (`gpt-5` by default), the research-worker model
+  (`gpt-5-mini` by default), and an image model (`gpt-image-2-2026-04-21`
+  by default). All three are overridable via env vars
+  (`ORCHESTRATOR_MODEL`, `RESEARCH_WORKER_MODEL`, `OPENAI_IMAGE_MODEL`).
+  See [Lower-cost setup](#lower-cost-setup) below if you don't have access
+  to those defaults.
 
 ## Setup
 
@@ -95,6 +99,23 @@ temporal config set --profile cloud --prop api_key   --value "<your-api-key>"
 
 See [Temporal environment configuration](https://docs.temporal.io/develop/python/environment-configuration)
 for details.
+
+### Lower-cost setup
+
+If you don't have access to `gpt-5` or `gpt-image-2`, override the
+defaults with smaller / earlier-generation models:
+
+```bash
+# in .env
+ORCHESTRATOR_MODEL='gpt-5-mini'      # falls back from gpt-5
+RESEARCH_WORKER_MODEL='gpt-5-mini'   # already the default
+OPENAI_IMAGE_MODEL='gpt-image-1'     # falls back from gpt-image-2
+```
+
+To skip live image generation entirely, set `DEMO_RESEARCH_IMAGE_PATH`
+to a previously generated file (under `temp_images/`, which is
+gitignored). The activity returns the cached path immediately instead of
+calling the image API.
 
 ## Running the demo
 
@@ -163,9 +184,10 @@ activity's retry policy (4-second fixed backoff, max 10 attempts) lives in
 
 ### Recipe A — recoverable activity failure
 
-Temporal retries the activity in place. The audience sees N failed attempts
-in the workflow history, ~4s gaps between them, and then a successful
-attempt that lets the workflow continue without rerunning earlier work.
+Temporal retries the activity in place. With `RETRY_FAILURES='8'` the
+audience sees 8 failed attempts and then a successful 9th attempt — about
+38s end-to-end (8 short attempts plus 8 × 4-second retry backoffs), with
+the workflow continuing without rerunning earlier work.
 
 Either edit `.env` (the worker reads it via `load_dotenv()`):
 
@@ -199,11 +221,18 @@ Temporal moves the in-flight activity to a different worker. The audience
 sees the activity stall when the worker dies, then resume on a fresh worker
 without losing earlier state.
 
+The orchestrator issues `query_data_warehouse` and `generate_research_image`
+as parallel tool calls. To force them onto *different* workers — so killing
+the one running the warehouse lookup doesn't also orphan the slower image
+activity — set worker concurrency to 1 in addition to the failure-injection
+knobs.
+
 Either edit `.env`:
 
 ```bash
 DEMO_DATA_WAREHOUSE_RETRY_FAILURES='0'
 DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='8'
+DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES='1'
 ```
 
 …or export in each worker's shell:
@@ -211,6 +240,7 @@ DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='8'
 ```bash
 export DEMO_DATA_WAREHOUSE_RETRY_FAILURES='0'
 export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='8'
+export DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES='1'
 ```
 
 Then start two workers behind the same task queue:

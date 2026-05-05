@@ -1,3 +1,5 @@
+import os
+
 from agents import Agent, WebSearchTool
 from agents.model_settings import ModelSettings
 from dotenv import load_dotenv
@@ -38,6 +40,7 @@ def new_research_worker_agent() -> Agent:
     return Agent(
         name="ResearchWorkerAgent",
         instructions=INSTRUCTIONS,
+        model=os.getenv("RESEARCH_WORKER_MODEL", "gpt-5-mini"),
         tools=[WebSearchTool(search_context_size="low")],
         model_settings=ModelSettings(tool_choice="required"),
         output_type=SearchSummary,

@@ -167,7 +167,6 @@ async def start_research(request: StartResearchRequest):
 
     handle = await client.start_workflow(
         InteractiveResearchWorkflow.run,
-        args=[None, False],
         id=workflow_id,
         task_queue=TEMPORAL_TASK_QUEUE,
     )
