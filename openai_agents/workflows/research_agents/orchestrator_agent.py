@@ -12,11 +12,12 @@ written report). No post-hoc validator is needed.
 
 import os
 from datetime import timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, cast
 
 from agents import Agent, RunContextWrapper, function_tool
 from agents.model_settings import ModelSettings
 from openai.types.shared.reasoning import Reasoning
+from openai.types.shared.reasoning_effort import ReasoningEffort
 from pydantic import BaseModel, Field
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -251,15 +252,20 @@ async def generate_research_image(
 
 
 def new_orchestrator_agent() -> Agent:
+    effort = cast(
+        ReasoningEffort, os.getenv("ORCHESTRATOR_REASONING_EFFORT", "minimal")
+    )
+    verbosity = cast(
+        Literal["low", "medium", "high"],
+        os.getenv("ORCHESTRATOR_VERBOSITY", "low"),
+    )
     return Agent(
         name="OrchestratorAgent",
         instructions=SYSTEM_PROMPT,
         model=os.getenv("ORCHESTRATOR_MODEL", "gpt-5"),
         model_settings=ModelSettings(
-            reasoning=Reasoning(
-                effort=os.getenv("ORCHESTRATOR_REASONING_EFFORT", "minimal")
-            ),
-            verbosity=os.getenv("ORCHESTRATOR_VERBOSITY", "low"),
+            reasoning=Reasoning(effort=effort),
+            verbosity=verbosity,
         ),
         tools=[
             elicit_user,

@@ -13,6 +13,7 @@ dependencies = [
     # contrib.opentelemetry, so we need both extras together.
     "temporalio[openai-agents,opentelemetry]>=1.27.0",
     "pydantic>=2.13.0,<3",
+    "pillow>=11.0.0",
     "dotenv>=0.9.9",
     "fastapi>=0.136.0",
     "uvicorn>=0.37.0",

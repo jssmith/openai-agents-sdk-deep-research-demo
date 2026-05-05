@@ -172,7 +172,7 @@ async def start_research(request: StartResearchRequest):
         task_queue=TEMPORAL_TASK_QUEUE,
     )
 
-    status = await handle.execute_update(
+    await handle.execute_update(
         InteractiveResearchWorkflow.start_research,
         UserQueryInput(query=request.query.strip()),
     )
