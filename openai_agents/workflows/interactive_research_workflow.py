@@ -32,6 +32,7 @@ with workflow.unsafe.imports_passed_through():
     from openai_agents.workflows.research_agents.research_models import (
         Elicitation,
         ElicitationResponseInput,
+        ReportData,
         ResearchInteractionDict,
         UserQueryInput,
     )
@@ -39,7 +40,6 @@ with workflow.unsafe.imports_passed_through():
         SearchSummary,
         new_research_worker_agent,
     )
-    from openai_agents.workflows.research_agents.writer_agent import ReportData
 
 
 @dataclass

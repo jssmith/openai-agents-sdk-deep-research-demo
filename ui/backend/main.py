@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from temporalio.client import Client
@@ -266,50 +266,6 @@ async def get_result(workflow_id: str):
     # }
 
     return result
-
-
-@app.get("/api/stream/{workflow_id}")
-async def stream_status(workflow_id: str):
-    """
-    Server-Sent Events endpoint for live status updates.
-
-    Streams status updates every second until workflow completes.
-    """
-    # TODO: Implement SSE streaming with Temporal
-    #
-    # async def event_generator():
-    #     client = await get_temporal_client()
-    #     handle = client.get_workflow_handle(workflow_id)
-    #
-    #     while True:
-    #         status = await handle.query(InteractiveResearchWorkflow.get_status)
-    #
-    #         data = {
-    #             "status": status.status,
-    #             "current_question_index": status.current_question_index,
-    #             "total_questions": len(status.clarification_questions or []),
-    #         }
-    #
-    #         yield f"data: {json.dumps(data)}\n\n"
-    #
-    #         if status.status == "complete":
-    #             break
-    #
-    #         await asyncio.sleep(1)
-    #
-    # return StreamingResponse(
-    #     event_generator(),
-    #     media_type="text/event-stream",
-    #     headers={
-    #         "Cache-Control": "no-cache",
-    #         "Connection": "keep-alive",
-    #     }
-    # )
-
-    raise HTTPException(
-        status_code=501,
-        detail="Temporal integration not configured. See backend/main.py for setup instructions.",
-    )
 
 
 @app.get("/api/health")

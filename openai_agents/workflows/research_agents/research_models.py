@@ -5,6 +5,14 @@ from typing import Dict, Optional
 from pydantic import BaseModel
 
 
+class ReportData(BaseModel):
+    """Final report payload surfaced to the UI."""
+
+    short_summary: str
+    markdown_report: str
+    follow_up_questions: list[str]
+
+
 class UserQueryInput(BaseModel):
     """Input for initial user research query."""
 

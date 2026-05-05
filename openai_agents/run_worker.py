@@ -20,7 +20,6 @@ from openai_agents.workflows.image_generation_activity import generate_image
 from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchWorkflow,
 )
-from openai_agents.workflows.pdf_generation_activity import generate_pdf
 
 # Load environment variables
 load_dotenv()
@@ -79,7 +78,6 @@ async def main():
             InteractiveResearchWorkflow,
         ],
         activities=[
-            generate_pdf,
             generate_image,
             fetch_data_warehouse_context,
         ],
