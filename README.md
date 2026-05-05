@@ -194,7 +194,93 @@ patterns:
 
 The `DEMO_*` environment variables in `.env-sample` control how aggressive
 the failure injection is. The shipped defaults are recording-clean (no
-crashes, fast warehouse). Flip them on for the failure-recovery moment.
+crashes, fast warehouse). Flip them on for the failure-recovery moment —
+see the next section.
+
+## Failure injection
+
+The `DataWarehouseLookup` activity is the place where Temporal's recovery
+behavior shines. Two demo knobs in `.env` (or in the worker's environment)
+control how it misbehaves:
+
+| Env var | What it does |
+| --- | --- |
+| `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` | Number of attempts that fail before the activity succeeds. `0` = always succeed on attempt 1. `8` = attempts 1–8 fail, attempt 9 succeeds. |
+| `DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS` | Latency of attempt 1 only. `1s` is brisk; `8s` gives you time to SIGKILL the worker mid-attempt. |
+
+Defined in `openai_agents/workflows/enterprise_data_activities.py`. The
+activity's retry policy (4-second fixed backoff, max 10 attempts) lives in
+`openai_agents/workflows/research_agents/orchestrator_agent.py`.
+
+### Recipe A — recoverable activity failure
+
+Temporal retries the activity in place. The audience sees N failed attempts
+in the workflow history, ~4s gaps between them, and then a successful
+attempt that lets the workflow continue without rerunning earlier work.
+
+```bash
+# in .env, or exported in the worker's shell
+DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
+DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
+
+# one worker is enough
+bash scripts/start-clean-worker
+```
+
+What to highlight in the Temporal UI:
+
+- The workflow's pending activity stays as `DataWarehouseLookup` for ~32s.
+- Click the activity → **Pending Activities** shows attempt count climbing
+  and the `lastFailure` message: *"Simulated remote connection reset…"*.
+- The earlier completed events (clarifications, search summaries) are
+  unchanged. The retry only re-runs the failing activity.
+- After attempt 9 the activity completes and the workflow proceeds.
+
+### Recipe B — worker death mid-flight
+
+Temporal moves the in-flight activity to a different worker. The audience
+sees the activity stall when the worker dies, then resume on a fresh worker
+without losing earlier state.
+
+```bash
+# in .env
+DEMO_DATA_WAREHOUSE_RETRY_FAILURES='0'
+DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='8'
+
+# two workers behind the same task queue
+bash scripts/start-clean-worker        # writes .demo-worker-clean.pid
+bash scripts/start-clean-worker 2      # writes .demo-worker-clean-2.pid
+```
+
+Run the demo and watch the workflow until the data-warehouse activity
+starts (the orchestrator emits `query_data_warehouse`). While the 8-second
+attempt is in flight, kill whichever worker picked it up:
+
+```bash
+bash scripts/crash-worker     # kills .demo-worker-clean.pid
+# or
+bash scripts/crash-worker 2   # kills .demo-worker-clean-2.pid
+```
+
+What to highlight in the Temporal UI:
+
+- The activity's `lastHeartbeat` ages while the dead worker has the lock.
+- The schedule-to-close timeout (300s on this activity) ensures Temporal
+  reassigns it well before the workflow gives up.
+- The activity reappears as `Started` on the other worker; previously
+  completed events stay completed.
+
+### Inspecting after the fact
+
+```bash
+bash scripts/show-history <workflow-id>
+```
+
+Prints a TSV of activity-scheduled / started / failed / completed events,
+the attempt counter, and the failure message — handy for stepping through
+what Temporal actually did.
+
+`.env-sample` has the same recipes inline as a quick reference.
 
 ## Development
 
