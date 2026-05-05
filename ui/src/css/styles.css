@@ -41,16 +41,21 @@
 body, html {
     width: 100%;
     height: 100%;
+}
+
+/* Chat page is a fixed single-screen layout with its own internal scrollers */
+html:has(body.chat-page),
+body.chat-page {
     overflow: hidden;
 }
 
 #gradient-canvas {
     width: 100%;
     height: 100%;
-    --gradient-color-1: #FDA110;
-    --gradient-color-2: #444CE7;
-    --gradient-color-3: #211B4E;
-    --gradient-color-4: #D300DB;
+    --gradient-color-1: #444CE7;
+    --gradient-color-2: #141414;
+    --gradient-color-3: #2A2B8A;
+    --gradient-color-4: #F8FAFC;
 }
 
 .full-overlay {
@@ -183,18 +188,21 @@ a[href="https://neat.firecms.co"] {
     color: #FFF;
 }
 
-.spinner-container {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 20px;
-}
-
 .spinner {
+    display: block;
+    flex: 0 0 auto;
     width: 1.6485rem;
     height: 1.6485rem;
-    transform: rotate(156.169deg);
+    transform: none;
+    transform-box: view-box;
+    transform-origin: center;
+}
+
+.spinner > g {
+    transform-box: view-box;
+    transform-origin: center;
     animation: spin 1s linear infinite;
+    will-change: transform;
 }
 
 @keyframes spin {
@@ -204,6 +212,14 @@ a[href="https://neat.firecms.co"] {
     to {
         transform: rotate(516.169deg);
     }
+}
+
+.spinner-message.retrying .spinner path {
+    stroke: #F59E0B !important;
+}
+
+.spinner-message.retrying .researching-text {
+    color: #F59E0B;
 }
 
 .researching-text {
@@ -220,7 +236,7 @@ a[href="https://neat.firecms.co"] {
 
 .input-container {
     position: absolute;
-    bottom: 20px;
+    bottom: 48px;
     left: 24px;
     right: 24px;
 }
@@ -273,6 +289,15 @@ a[href="https://neat.firecms.co"] {
     width: 1rem;
     height: 1rem;
     flex-shrink: 0;
+}
+
+body.chat-page.report-open .chat-container {
+    max-height: calc(100vh - 88px);
+    padding-bottom: 20px;
+}
+
+body.chat-page.report-open .input-container {
+    display: none;
 }
 
 /* ============================================
@@ -477,11 +502,56 @@ a[href="https://neat.firecms.co"] {
     color: #000;
 }
 
+.markdown-content h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: #000;
+}
+
 .markdown-content p {
     font-size: 1rem;
     line-height: 1.6;
     margin-bottom: 1rem;
     color: #000;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+    padding-left: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.markdown-content li {
+    font-size: 1rem;
+    line-height: 1.6;
+    margin-bottom: 0.25rem;
+    color: #000;
+}
+
+.markdown-content a {
+    color: #444CE7;
+    text-decoration: underline;
+}
+
+.markdown-content hr {
+    border: none;
+    border-top: 1px solid #E4E4E7;
+    margin: 1.5rem 0;
+}
+
+.markdown-content code {
+    background: #F4F4F5;
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+}
+
+.markdown-content blockquote {
+    border-left: 3px solid #444CE7;
+    padding-left: 1rem;
+    margin: 1rem 0;
+    color: #52525B;
 }
 
 .placeholder-image {
@@ -492,4 +562,568 @@ a[href="https://neat.firecms.co"] {
 
 .placeholder-image img {
     width: 100%;
+    max-height: 300px;
+    object-fit: cover;
+}
+
+/* ============================================
+   Conference demo conversation layout
+   ============================================ */
+body.chat-page {
+    background:
+        linear-gradient(90deg, rgba(88, 72, 255, 0.11) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(88, 72, 255, 0.1) 1px, transparent 1px),
+        radial-gradient(circle at 92% 7%, rgba(68, 76, 231, 0.28), transparent 34%),
+        radial-gradient(circle at 10% 90%, rgba(0, 188, 125, 0.11), transparent 36%),
+        linear-gradient(180deg, #08111f 0%, #050813 100%);
+    background-size: 64px 64px, 64px 64px, auto, auto, auto;
+}
+
+body.chat-page #gradient-canvas {
+    display: none;
+}
+
+body.chat-page .full-overlay {
+    display: none;
+}
+
+body.chat-page .content-section {
+    max-width: 640px;
+    padding: 30px 28px 26px;
+}
+
+body.chat-page .app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 22px;
+}
+
+body.chat-page .app-header-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+body.chat-page .reset-button {
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.72);
+    color: #f8fafc;
+    cursor: pointer;
+    /* Mid-flight: muted; reveal on header hover or focus. */
+    opacity: 0.18;
+    transition: opacity 160ms ease, background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+body.chat-page .app-header:hover .reset-button,
+body.chat-page .reset-button:hover,
+body.chat-page .reset-button:focus-visible {
+    opacity: 1;
+}
+
+/* When research is complete, the button is solid regardless of hover. */
+body.chat-page.research-complete .reset-button {
+    opacity: 1;
+}
+
+body.chat-page .reset-button:hover {
+    background: rgba(30, 41, 59, 0.9);
+    border-color: rgba(148, 163, 184, 0.55);
+}
+
+body.chat-page .reset-button:active {
+    transform: scale(0.94);
+}
+
+body.chat-page .reset-button:focus-visible {
+    outline: 2px solid rgba(99, 102, 241, 0.7);
+    outline-offset: 2px;
+}
+
+body.chat-page .reset-button img {
+    width: 15px;
+    height: 14px;
+    pointer-events: none;
+}
+
+body.chat-page .main-heading {
+    margin: 0;
+    color: #f8fafc;
+    text-align: left;
+    font-size: 2.125rem;
+    font-weight: 500;
+    line-height: 1.05;
+}
+
+body.chat-page .agent-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+    margin: 0;
+    padding: 7px 11px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.72);
+    color: #a7f3d0;
+    font-size: 0.9375rem;
+    line-height: 1;
+}
+
+body.chat-page .agent-status-dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 999px;
+    background: #00c950;
+    box-shadow: 0 0 0 5px rgba(0, 201, 80, 0.13);
+}
+
+body.chat-page .agent-status-dot.complete {
+    background: #22c55e;
+}
+
+body.chat-page .chat-container {
+    gap: 10px;
+    margin-top: 0;
+    max-height: calc(100vh - 128px);
+    padding-bottom: 92px;
+    scrollbar-width: none;
+}
+
+body.chat-page .chat-container::-webkit-scrollbar {
+    display: none;
+}
+
+body.chat-page .message-bubble {
+    display: block;
+    max-width: 486px;
+    padding: 13px 18px 14px;
+    font-size: 1.3125rem;
+    line-height: 1.25;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.18);
+}
+
+body.chat-page .message-bubble.bot {
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 6px 18px 18px 18px;
+    background: rgba(15, 23, 42, 0.82);
+    color: #e5eefb;
+}
+
+body.chat-page .message-bubble.user {
+    border-radius: 18px 6px 18px 18px;
+    background: #444ce7;
+}
+
+body.chat-page .agent-status-message {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 12px;
+    align-items: start;
+    width: min(100%, 520px);
+    padding: 11px 15px;
+    border-radius: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    background: rgba(2, 6, 23, 0.52);
+    color: #d8e2f4;
+    font-family: 'Aeonik', sans-serif;
+    font-size: 1.125rem;
+    line-height: 1.25;
+}
+
+body.chat-page .agent-status-icon {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 201, 80, 0.75);
+    color: #bbf7d0;
+    font-size: 1rem;
+    line-height: 1;
+}
+
+body.chat-page .agent-status-detail {
+    display: block;
+    margin-top: 4px;
+    color: #91a3bc;
+    font-size: 0.9375rem;
+    line-height: 1.25;
+}
+
+body.chat-page .spinner-message {
+    justify-content: flex-start;
+}
+
+body.chat-page .agent-thinking-message {
+    grid-template-columns: 26px 1fr;
+    align-items: center;
+    width: fit-content;
+    max-width: 520px;
+}
+
+body.chat-page .agent-thinking-message .spinner {
+    width: 26px;
+    height: 26px;
+}
+
+body.chat-page .input-container {
+    bottom: 26px;
+    left: 28px;
+    right: 28px;
+}
+
+body.chat-page .user-input {
+    height: 58px;
+    padding: 0 58px 0 19px;
+    border: 1px solid rgba(148, 163, 184, 0.31);
+    background: rgba(15, 23, 42, 0.9);
+    color: #f8fafc;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.25);
+    font-size: 1.3125rem;
+}
+
+body.chat-page .user-input::placeholder {
+    color: #94a3b8;
+    font-size: 1.3125rem;
+}
+
+body.chat-page .submit-button {
+    width: 42px;
+    height: 42px;
+    right: 8px;
+    top: 8px;
+}
+
+body.chat-page .report-message {
+    display: block;
+}
+
+body.chat-page .report-card {
+    width: 100%;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 16px;
+    overflow: hidden;
+    background: rgba(248, 250, 252, 0.95);
+    color: #0f172a;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+    font-family: 'Aeonik', sans-serif;
+}
+
+body.chat-page .report-card-main {
+    display: grid;
+    grid-template-columns: 118px 1fr;
+    gap: 15px;
+    padding: 14px 16px;
+}
+
+body.chat-page .report-card-image,
+body.chat-page .report-card-image-placeholder {
+    width: 118px;
+    height: 106px;
+    border-radius: 10px;
+    object-fit: cover;
+    display: block;
+}
+
+body.chat-page .report-card-image-placeholder {
+    display: grid;
+    place-items: center;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 1rem;
+}
+
+body.chat-page .report-card-eyebrow {
+    display: block;
+    margin-bottom: 5px;
+    color: #047857;
+    font-size: 0.9375rem;
+    font-weight: 500;
+}
+
+body.chat-page .report-card h2 {
+    margin: 0 0 11px;
+    color: #0f172a;
+    font-size: 1.375rem;
+    font-weight: 500;
+    line-height: 1.1;
+}
+
+body.chat-page .report-card p {
+    margin: 0;
+    color: #334155;
+    font-size: 1rem;
+    line-height: 1.25;
+}
+
+body.chat-page .report-card-action {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    border-top: 1px solid #dbe3ef;
+    padding: 12px 16px;
+    background: #ffffff;
+    color: #1e40af;
+    font-size: 1.125rem;
+    font-weight: 500;
+}
+
+body.chat-page .report-panel {
+    max-height: 430px;
+    overflow-y: auto;
+    border-top: 1px solid #dbe3ef;
+    background: #ffffff;
+    cursor: default;
+}
+
+body.chat-page .report-panel-actions {
+    position: sticky;
+    top: 0;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 16px;
+    border-bottom: 1px solid #e2e8f0;
+    background: rgba(255, 255, 255, 0.96);
+}
+
+body.chat-page .report-download-btn,
+body.chat-page .report-full-link {
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 8px 10px;
+    background: #f8fafc;
+    color: #1e40af;
+    font: inherit;
+    font-size: 0.9375rem;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+body.chat-page .markdown-content.compact {
+    padding: 16px;
+    color: #0f172a;
+}
+
+body.chat-page .markdown-content.compact h1 {
+    font-size: 1.375rem;
+    line-height: 1.2;
+}
+
+body.chat-page .markdown-content.compact h2 {
+    font-size: 1.125rem;
+    line-height: 1.25;
+}
+
+body.chat-page .markdown-content.compact h3,
+body.chat-page .markdown-content.compact p,
+body.chat-page .markdown-content.compact li {
+    font-size: 0.9375rem;
+    line-height: 1.45;
+}
+
+@media (max-width: 520px) {
+    body.chat-page .content-section {
+        padding-inline: 18px;
+    }
+
+    body.chat-page .main-heading {
+        font-size: 1.75rem;
+    }
+
+    body.chat-page .message-bubble {
+        font-size: 1.125rem;
+    }
+
+    body.chat-page .report-card-main {
+        grid-template-columns: 1fr;
+    }
+
+    body.chat-page .report-card-image,
+    body.chat-page .report-card-image-placeholder {
+        width: 100%;
+        height: 180px;
+    }
+}
+
+/* ============================================
+   Full report page
+   ============================================ */
+body.report-page {
+    min-height: 100%;
+    overflow: auto;
+    background:
+        linear-gradient(90deg, rgba(88, 72, 255, 0.11) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(88, 72, 255, 0.1) 1px, transparent 1px),
+        radial-gradient(circle at 92% 7%, rgba(68, 76, 231, 0.28), transparent 34%),
+        radial-gradient(circle at 10% 90%, rgba(0, 188, 125, 0.11), transparent 36%),
+        linear-gradient(180deg, #08111f 0%, #050813 100%);
+    background-size: 64px 64px, 64px 64px, auto, auto, auto;
+    color: #f8fafc;
+    font-family: 'Aeonik', sans-serif;
+}
+
+.report-shell {
+    width: min(100%, 920px);
+    margin: 0 auto;
+    padding: 32px 28px 48px;
+}
+
+.report-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 24px;
+}
+
+.report-back-link {
+    display: inline-block;
+    margin-bottom: 10px;
+    color: #bfdbfe;
+    font-size: 0.9375rem;
+    text-decoration: none;
+}
+
+.report-back-link:hover {
+    text-decoration: underline;
+}
+
+.report-header h1 {
+    margin: 0;
+    color: #f8fafc;
+    font-size: 2.125rem;
+    font-weight: 500;
+    line-height: 1.05;
+}
+
+.report-status {
+    margin: 0;
+    padding: 7px 11px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.72);
+    font-size: 0.9375rem;
+    line-height: 1;
+}
+
+.report-hero {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 24px;
+    align-items: stretch;
+    margin-bottom: 22px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 18px;
+    background: rgba(248, 250, 252, 0.95);
+    color: #0f172a;
+    overflow: hidden;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.report-hero-image {
+    width: 100%;
+    height: 100%;
+    min-height: 220px;
+    object-fit: cover;
+    background: #dbeafe;
+}
+
+.report-hero-copy {
+    padding: 24px 24px 24px 0;
+}
+
+.report-hero-copy h2 {
+    margin: 0 0 12px;
+    color: #0f172a;
+    font-size: 2rem;
+    font-weight: 500;
+    line-height: 1.08;
+}
+
+.report-hero-copy p {
+    margin: 0 0 20px;
+    color: #334155;
+    font-size: 1.0625rem;
+    line-height: 1.45;
+}
+
+body.report-page .report-download-btn {
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: #f8fafc;
+    color: #1e40af;
+    font-family: 'Aeonik', sans-serif;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+body.report-page .report-download-btn:disabled {
+    color: #64748b;
+    cursor: default;
+}
+
+.full-report-panel {
+    border-radius: 18px;
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.24);
+}
+
+.full-report-panel .markdown-content {
+    padding: 32px;
+    color: #0f172a;
+}
+
+.full-report-panel .markdown-content h1 {
+    color: #0f172a;
+    font-size: 2rem;
+    line-height: 1.15;
+}
+
+.full-report-panel .markdown-content h2 {
+    color: #0f172a;
+    font-size: 1.375rem;
+    line-height: 1.25;
+    margin-top: 1.5rem;
+}
+
+.full-report-panel .markdown-content h3,
+.full-report-panel .markdown-content p,
+.full-report-panel .markdown-content li {
+    color: #0f172a;
+}
+
+@media (max-width: 760px) {
+    .report-header,
+    .report-hero {
+        display: block;
+    }
+
+    .report-status {
+        display: inline-flex;
+        margin-top: 16px;
+    }
+
+    .report-hero-image {
+        height: 220px;
+    }
+
+    .report-hero-copy {
+        padding: 22px;
+    }
 }

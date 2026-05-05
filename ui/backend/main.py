@@ -19,11 +19,14 @@ from typing import Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from temporalio.client import Client
-from temporalio.contrib.pydantic import pydantic_data_converter
+from temporalio.contrib.openai_agents._temporal_openai_agents import (
+    OpenAIPayloadConverter,
+)
+from temporalio.converter import DataConverter
 from temporalio.envconfig import ClientConfig
 
 from openai_agents.workflows.interactive_research_workflow import (
@@ -31,7 +34,7 @@ from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchWorkflow,
 )
 from openai_agents.workflows.research_agents.research_models import (
-    SingleClarificationInput,
+    ElicitationResponseInput,
     UserQueryInput,
 )
 
@@ -82,7 +85,7 @@ async def get_temporal_client() -> Client:
 
     temporal_client = await Client.connect(
         **temporal_config,
-        data_converter=pydantic_data_converter,
+        data_converter=DataConverter(payload_converter_class=OpenAIPayloadConverter),
     )
     return temporal_client
 
@@ -164,12 +167,11 @@ async def start_research(request: StartResearchRequest):
 
     handle = await client.start_workflow(
         InteractiveResearchWorkflow.run,
-        args=[None, False],
         id=workflow_id,
         task_queue=TEMPORAL_TASK_QUEUE,
     )
 
-    status = await handle.execute_update(
+    await handle.execute_update(
         InteractiveResearchWorkflow.start_research,
         UserQueryInput(query=request.query.strip()),
     )
@@ -186,67 +188,52 @@ async def get_status(workflow_id: str):
     Get current workflow status.
 
     Returns:
-        workflow_id: Workflow identifier
-        status: Current status (awaiting_clarifications, researching, completed)
-        current_question: The clarification question to display (if awaiting)
-        current_question_index: Index of current question
-        total_questions: Total number of clarification questions
+        workflow_id, status, original_query, current_activity, progress_plan,
+        pending_elicitation (or null), completed_elicitations.
     """
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
     status = await handle.query(InteractiveResearchWorkflow.get_status)
 
-    response = {
+    return {
         "workflow_id": workflow_id,
         "status": status.status,
         "original_query": status.original_query,
-        "current_question": status.current_question,
-        "current_question_index": status.current_question_index,
-        "total_questions": len(status.clarification_questions or []),
-        "clarification_responses": status.clarification_responses or {},
+        "research_completed": status.research_completed,
+        "current_activity": status.current_activity,
+        "progress_plan": status.progress_plan,
+        "pending_elicitation": (
+            status.pending_elicitation.model_dump()
+            if status.pending_elicitation is not None
+            else None
+        ),
+        "completed_elicitations": [e.model_dump() for e in status.completed_elicitations],
     }
 
-    if status.status == "awaiting_clarifications":
-        response["current_question"] = status.get_current_question()
 
-    return response
-
-
-@app.post("/api/answer/{workflow_id}/{current_question_index}")
-async def submit_answer(
-    workflow_id: str, current_question_index: int, request: AnswerRequest
+@app.post("/api/elicitation/{workflow_id}/{elicitation_id}")
+async def submit_elicitation_response(
+    workflow_id: str,
+    elicitation_id: str,
+    request: AnswerRequest,
 ):
-    """
-    Submit an answer to a clarification question.
-
-    Returns:
-        status: "accepted" if answer was recorded
-        workflow_status: Current workflow status after answer
-        questions_remaining: Number of questions left
-    """
+    """Deliver a response to the workflow's pending elicitation."""
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
 
     await handle.execute_update(
-        InteractiveResearchWorkflow.provide_single_clarification,
-        SingleClarificationInput(
-            question_index=current_question_index, answer=request.answer.strip()
+        InteractiveResearchWorkflow.submit_elicitation_response,
+        ElicitationResponseInput(
+            elicitation_id=elicitation_id,
+            response=request.answer.strip(),
         ),
     )
 
     status = await handle.query(InteractiveResearchWorkflow.get_status)
-
     return {
         "status": "accepted",
         "workflow_status": status.status,
-        "questions_remaining": len(status.clarification_questions or [])
-        - status.current_question_index,
     }
-
-    raise HTTPException(
-        status_code=501,
-        detail="Temporal integration not configured. See backend/main.py for setup instructions.",
-    )
 
 
 @app.get("/api/result/{workflow_id}")
@@ -278,50 +265,6 @@ async def get_result(workflow_id: str):
     # }
 
     return result
-
-
-@app.get("/api/stream/{workflow_id}")
-async def stream_status(workflow_id: str):
-    """
-    Server-Sent Events endpoint for live status updates.
-
-    Streams status updates every second until workflow completes.
-    """
-    # TODO: Implement SSE streaming with Temporal
-    #
-    # async def event_generator():
-    #     client = await get_temporal_client()
-    #     handle = client.get_workflow_handle(workflow_id)
-    #
-    #     while True:
-    #         status = await handle.query(InteractiveResearchWorkflow.get_status)
-    #
-    #         data = {
-    #             "status": status.status,
-    #             "current_question_index": status.current_question_index,
-    #             "total_questions": len(status.clarification_questions or []),
-    #         }
-    #
-    #         yield f"data: {json.dumps(data)}\n\n"
-    #
-    #         if status.status == "complete":
-    #             break
-    #
-    #         await asyncio.sleep(1)
-    #
-    # return StreamingResponse(
-    #     event_generator(),
-    #     media_type="text/event-stream",
-    #     headers={
-    #         "Cache-Control": "no-cache",
-    #         "Connection": "keep-alive",
-    #     }
-    # )
-
-    raise HTTPException(
-        status_code=501,
-        detail="Temporal integration not configured. See backend/main.py for setup instructions.",
-    )
 
 
 @app.get("/api/health")

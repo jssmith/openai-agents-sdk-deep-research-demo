@@ -1,183 +1,57 @@
-# Research Agent Components
+# Research agents
 
-This directory contains shared agent components used by two distinct research workflows in this demo project. The agents demonstrate different patterns of orchestration, from simple linear execution to complex multi-agent interactions with user clarifications.
+The agentic deep-research demo runs a single orchestrator agent that drives
+the entire research pipeline through tool calls. There is no chain of
+handoffs and no per-stage agent: the orchestrator talks to the user, fans
+out research workers, queries the data warehouse, generates a thematic
+image, and emits the final report itself as a structured response.
 
-## Two Research Workflows
+## Files
 
-This project includes two research workflows that showcase different levels of complexity:
+- **`orchestrator_agent.py`** — the top-level agent. Runs inside
+  `InteractiveResearchWorkflow` via `Runner.run`. Its tools are:
+  - `elicit_user(message, progress_plan?)` — ask the user one question and
+    wait for the answer; the workflow blocks until a response is delivered
+    via the FE-BE elicitation contract. Required exactly twice.
+  - `run_parallel_research(subqueries)` — fan 4–6 `ResearchWorkerAgent`
+    sub-agents out in parallel, gather `SearchSummary` outputs.
+  - `query_data_warehouse(query)` — call the
+    `fetch_data_warehouse_context` activity. Issued in parallel with
+    `generate_research_image` in the same agent turn.
+  - `generate_research_image(image_prompt)` — call the `generate_image`
+    activity to produce a thematic image.
+  - Terminal action: emit a `FinalizeReportRequest` Pydantic model as the
+    structured final response. The runtime parses this into the report.
 
-### Basic Research Workflow
-- **File**: `../research_bot_workflow.py`
-- **Manager**: `../simple_research_manager.py` (SimpleResearchManager)
-- **Purpose**: Demonstrates simple agent orchestration in a linear pipeline
-- **Usage**: `uv run openai_agents/run_research_workflow.py "your research query"`
+  Determinism is enforced *structurally* through required Pydantic-typed
+  tool arguments — there is no validator step. The workflow rejects
+  out-of-order tool calls (e.g. `run_parallel_research` before two
+  elicitations have completed).
 
-### Interactive Research Workflow  
-- **File**: `../interactive_research_workflow.py`
-- **Manager**: `research_manager.py` (InteractiveResearchManager)
-- **Purpose**: Advanced workflow with intelligent question generation and user interaction
-- **Usage**: `uv run openai_agents/run_interactive_research_workflow.py "your research query"`
+- **`research_worker_agent.py`** — the small sub-agent the orchestrator
+  fans out for each parallel subquery. Uses `WebSearchTool` and returns a
+  `SearchSummary`.
 
-The interactive workflow is based on patterns from the [OpenAI Deep Research API cookbook](https://cookbook.openai.com/examples/deep_research_api/introduction_to_deep_research_api_agents).
+- **`research_models.py`** — Pydantic models shared across the workflow
+  and the FastAPI backend: `UserQueryInput`, `ElicitationResponseInput`,
+  `Elicitation`, `ReportData`, `ResearchInteractionDict`.
 
-## Basic Research Flow
-
-```
-User Query → Planner Agent → Search Agent(s) → Writer Agent → Markdown Report
-              (gpt-4o)        (parallel)       (gpt-4o)
-```
-
-### Agent Roles in Basic Flow:
-
-**Planner Agent** (`planner_agent.py`)
-- Analyzes the user query and generates 5-20 strategic web search terms
-- Uses `gpt-4o` for comprehensive search planning
-- Outputs structured `WebSearchPlan` with search terms and reasoning
-- Each search item includes `reason` (justification) and `query` (search term)
-
-**Search Agent** (`search_agent.py`)
-- Executes web searches using `WebSearchTool()` with required tool usage
-- Produces 2-3 paragraph summaries (max 300 words) per search
-- Focuses on capturing main points concisely for report synthesis
-- Handles search failures gracefully and returns consolidated results
-- Uses no LLM model directly - just processes search tool results
-
-**Writer Agent** (`writer_agent.py`)
-- Uses `o3-mini` model for high-quality report synthesis
-- Generates comprehensive 5-10 page reports (800-2000 words)
-- Returns structured `ReportData` with:
-  - `short_summary`: 2-3 sentence overview
-  - `markdown_report`: Full detailed report
-  - `follow_up_questions`: Suggested research topics
-- Creates detailed sections with analysis, examples, and conclusions
-
-## Interactive Research Flow
+## Execution shape
 
 ```
-User Query
-    └──→ Triage Agent (gpt-4o-mini)
-              └──→ Decision: Clarification Needed?
-                            │
-                ├── Yes → Clarifying Agent (gpt-4o-mini)
-                │             └──→ Generate Questions
-                │                          └──→ User Input
-                │                                     └──→ Instruction Agent (gpt-4o-mini)
-                │                                                   └──→ Enriched Query
-                │                                                             │
-                │                                                             └──→ Planner Agent (gpt-4o)
-                │                                                                          ├──→ Search Agent(s) (parallel)
-                │                                                                          └──→ Writer Agent (o3-mini)
-                │                                                                                     └──→ PDF Generator Agent
-                │                                                                                                └──→ Report + PDF
-                │
-                └── No → Instruction Agent (gpt-4o-mini)
-                               └──→ Direct Research
-                                          └──→ Planner Agent (gpt-4o)
-                                                       ├──→ Search Agent(s) (parallel)
-                                                       └──→ Writer Agent (o3-mini)
-                                                                     └──→ PDF Generator Agent
-                                                                                └──→ Report + PDF
+elicit_user (progress_plan committed)        ← Q1
+elicit_user                                  ← Q2 (informed by A1)
+run_parallel_research(subqueries[4..6])      ← parallel sub-agents
+query_data_warehouse  ║  generate_research_image   ← same turn, parallel
+                      ║
+emit FinalizeReportRequest                   ← terminal structured output
 ```
 
-### Agent Roles in Interactive Flow:
+## Models
 
-**Triage Agent** (`triage_agent.py`)
-- Analyzes query specificity and determines if clarifications are needed
-- Routes to either clarifying questions or direct research using agent handoffs
-- Uses `gpt-4o-mini` for fast, cost-effective decision making
-- Looks for vague terms, missing context, or broad requests
-- Can handoff to either `new_clarifying_agent()` or `new_instruction_agent()`
-
-**Clarifying Agent** (`clarifying_agent.py`)
-- Uses `gpt-4o-mini` model for question generation
-- Generates 2-3 targeted questions to gather missing information
-- Focuses on preferences, constraints, and specific requirements
-- Returns structured output (`Clarifications` model with `questions` list)
-- Can handoff to `new_instruction_agent()` after collecting questions
-- Integrates with Temporal workflow updates for user interaction
-
-**Instruction Agent** (`instruction_agent.py`)
-- Uses `gpt-4o-mini` model for query enhancement
-- Enriches original query with user responses to clarifying questions
-- Processes specific queries that don't need clarifications
-- Rewrites queries into detailed research instructions using first-person perspective
-- Can handoff to `new_planner_agent()` with enriched query
-- Handles language preferences and output formatting requirements
-
-**PDF Generator Agent** (`pdf_generator_agent.py`)
-- Uses `gpt-4o-mini` for intelligent formatting analysis and styling decisions
-- Calls the `generate_pdf` activity with 30-second timeout for actual PDF creation
-- Returns structured output (`PDFReportData`) including:
-  - `success`: Boolean indicating generation status
-  - `formatting_notes`: AI-generated notes about styling decisions
-  - `pdf_file_path`: Path to generated PDF file (if successful)
-  - `error_message`: Detailed error information (if failed)
-- Graceful error handling with detailed feedback
-- Professional PDF styling with proper typography and layout
-- Files saved to `pdf_output/` directory with timestamped names
-
-## Agent Handoff Pattern
-
-The research agents use OpenAI's agent handoff pattern to chain execution seamlessly:
-
-- **Triage Agent** → Can handoff to either **Clarifying Agent** or **Instruction Agent**
-- **Clarifying Agent** → Handoffs to **Instruction Agent** after collecting questions
-- **Instruction Agent** → Handoffs to **Planner Agent** with enriched query
-- **Other agents** → Execute independently without handoffs (Planner, Search, Writer, PDF Generator)
-
-This pattern allows complex multi-agent workflows where one agent can automatically transfer control to the next appropriate agent in the pipeline, enabling sophisticated research orchestration with minimal coordination overhead.
-
-## Shared Agent Components
-
-All agents in this directory are used by one or both research workflows:
-
-- **`planner_agent.py`** - Web search planning (used by both workflows)
-- **`search_agent.py`** - Web search execution (used by both workflows)
-- **`writer_agent.py`** - Report generation (used by both workflows)
-- **`pdf_generator_agent.py`** - PDF generation (interactive workflow only)
-- **`triage_agent.py`** - Query analysis and routing (interactive workflow only)
-- **`clarifying_agent.py`** - Question generation (interactive workflow only)
-- **`instruction_agent.py`** - Query enrichment (interactive workflow only)
-- **`research_models.py`** - Pydantic models for workflow state (interactive workflow only)
-- **`research_manager.py`** - InteractiveResearchManager orchestration
-
-## Usage Examples
-
-### Running Basic Research
-```bash
-# Start worker first
-uv run openai_agents/run_worker.py &
-
-# Run basic research
-uv run openai_agents/run_research_workflow.py "Best sustainable energy solutions for small businesses"
-```
-
-### Running Interactive Research
-```bash
-# Start worker first  
-uv run openai_agents/run_worker.py &
-
-# Run interactive research
-uv run openai_agents/run_interactive_research_workflow.py "Travel recommendations for Japan"
-```
-
-The interactive workflow will ask clarifying questions like:
-- What's your budget range?
-- When are you planning to travel?
-- What type of activities interest you most?
-- Any dietary restrictions or accessibility needs?
-
-## Model Configuration
-
-**Cost-Optimized Models:**
-- **Triage Agent**: `gpt-4o-mini` - Fast routing decisions
-- **Clarifying Agent**: `gpt-4o-mini` - Question generation  
-- **Instruction Agent**: `gpt-4o-mini` - Query enrichment
-
-**Research Models:**
-- **Planner Agent**: `gpt-4o` - Complex search strategy
-- **Search Agent**: Uses web search APIs (no LLM)
-- **Writer Agent**: `o3-mini` - High-quality report synthesis
-- **PDF Generator Agent**: `gpt-4o-mini` - PDF formatting decisions + WeasyPrint for generation
-
-This configuration balances cost efficiency for routing/clarification logic while using more powerful models for core research tasks.
+- **Orchestrator**: `gpt-5` by default, configurable via `ORCHESTRATOR_MODEL`,
+  `ORCHESTRATOR_REASONING_EFFORT`, `ORCHESTRATOR_VERBOSITY`.
+- **Research worker**: `gpt-5-mini` by default, configurable via
+  `RESEARCH_WORKER_MODEL`. Uses `WebSearchTool` for evidence gathering.
+- **Image generation**: `gpt-image-1` (called via the
+  `generate_image` activity, not from an agent).

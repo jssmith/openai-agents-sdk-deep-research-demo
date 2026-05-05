@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd -- "$script_dir/.." && pwd)"
+cd "$repo_dir"
+
+pid_files=("$@")
+if [[ "${#pid_files[@]}" -eq 0 ]]; then
+  # Pick up any clean-worker instances spawned via `start-clean-worker [name]`
+  # (which writes .demo-worker-clean-<name>.pid) plus the legacy pid files.
+  pid_files=(.demo-worker-1.pid .demo-worker-2.pid .demo-worker.pid)
+  shopt -s nullglob
+  pid_files+=(.demo-worker-clean*.pid)
+  shopt -u nullglob
+fi
+
+for pid_file in "${pid_files[@]}"; do
+  if [[ ! -f "$pid_file" ]]; then
+    echo "${pid_file}: missing"
+    continue
+  fi
+
+  pid="$(tr -d '[:space:]' <"$pid_file")"
+  if [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ ]]; then
+    echo "${pid_file}: invalid pid '${pid}'"
+    continue
+  fi
+
+  if ! kill -0 "$pid" >/dev/null 2>&1; then
+    echo "${pid_file}: pid ${pid} is not running"
+    continue
+  fi
+
+  command_line="$(ps -p "$pid" -o command= || true)"
+  if [[ "$command_line" != *"openai_agents/run_worker.py"* ]]; then
+    echo "${pid_file}: pid ${pid} is not a demo worker; skipping"
+    echo "  ${command_line}"
+    continue
+  fi
+
+  echo "${pid_file}: stopping worker pid ${pid}"
+  kill "$pid"
+done

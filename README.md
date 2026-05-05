@@ -1,171 +1,260 @@
-# Temporal Interactive Deep Research Demo using OpenAI Agents SDK
+# Temporal Interactive Deep Research Demo (OpenAI Agents SDK)
 
-This repository builds on the Temporal Interactive Deep Research Demo by @steveandroulakis, adding a web-based user interface.
+A demo of an agentic deep-research workflow built on
+[Temporal](https://temporal.io) and the
+[OpenAI Agents SDK](https://github.com/openai/openai-agents-python). A single
+orchestrator agent runs inside a Temporal workflow and drives the entire
+research loop — clarifying questions, parallel research sub-agents,
+proprietary-data lookup, image generation, and a final markdown report — by
+calling tools.
 
-For detailed information about the research agents in this repo, see [openai_agents/workflows/research_agents/README.md](openai_agents/workflows/research_agents/README.md)
-Access original repo [here](https://github.com/steveandroulakis/openai-agents-demos)
+This repository builds on the original
+[Temporal Interactive Deep Research demo by @steveandroulakis](https://github.com/steveandroulakis/openai-agents-demos)
+and has since diverged toward an agentic structure suitable for talks and
+live demos. See [CHANGELOG.md](CHANGELOG.md) for the diff against the
+upstream snapshot.
 
-## Key Features
+## Architecture
 
-- **Temporal Workflows**: This demo uses Temporal for reliable workflow orchestration
-- **OpenAI Agents**: Powered by the OpenAI Agents SDK for natural language processing
-- **Multi-Agent Systems**: The research demo showcases complex multi-agent coordination
-- **Interactive Workflows**: Research demo supports real-time user interaction
-- **Tool Integration**: Tools demo shows how to integrate external activities
-- **PDF Generation**: Interactive research workflow generates professional PDF reports alongside markdown
+```mermaid
+flowchart TB
+    Browser["Browser UI<br/>chat + report card"]
+    API["FastAPI backend<br/>ui/backend/main.py"]
 
-## About this Demo: Multi-Agent Interactive Research Workflow
+    subgraph WF["InteractiveResearchWorkflow (durable Temporal workflow)"]
+        direction TB
+        State["Workflow state<br/>query • elicitations • progress_plan • report"]
+        Orchestrator["OrchestratorAgent<br/>drives every step via tools"]
+        State --- Orchestrator
+    end
 
-An enhanced version of the research workflow with interactive clarifying questions to refine research parameters before execution and optional PDF generation.
+    Worker["ResearchWorkerAgent<br/>(WebSearchTool, fanned out N times)"]
+    DataAct["DataWarehouseLookup<br/>activity"]
+    ImageAct["generate_image<br/>activity"]
 
-This example is designed to be similar to the OpenAI Cookbook: [Introduction to deep research in the OpenAI API](https://cookbook.openai.com/examples/deep_research_api/introduction_to_deep_research_api)
+    Browser <-->|HTTP| API
+    API <-->|"start_workflow / execute_update / query"| WF
+    Orchestrator -->|"elicit_user (workflow tool)"| State
+    Orchestrator -->|run_parallel_research| Worker
+    Orchestrator -->|query_data_warehouse| DataAct
+    Orchestrator -->|generate_research_image| ImageAct
+```
 
-**Files:**
-
-- `openai_agents/workflows/interactive_research_workflow.py` - Interactive research workflow
-- `openai_agents/workflows/research_agents/` - All research agent components
-- `openai_agents/run_interactive_research_workflow.py` - Interactive research client
-- `openai_agents/workflows/pdf_generation_activity.py` - PDF generation activity
-- `openai_agents/workflows/research_agents/pdf_generator_agent.py` - PDF generation agent
-
-**Agents:**
-
-- **Triage Agent**: Analyzes research queries and determines if clarifications are needed
-- **Clarifying Agent**: Generates follow-up questions for better research parameters
-- **Instruction Agent**: Refines research parameters based on user responses
-- **Planner Agent**: Creates web search plans
-- **Search Agent**: Performs web searches
-- **Writer Agent**: Compiles final research reports
-- **PDF Generator Agent**: Converts markdown reports to professionally formatted PDFs
+- **Workflow** (`openai_agents/workflows/interactive_research_workflow.py`):
+  durable state — original query, pending elicitation, completed elicitations,
+  current activity, progress plan, final report. Every user input is delivered
+  via a Temporal workflow update; every status read is a query.
+- **Orchestrator agent** (`openai_agents/workflows/research_agents/orchestrator_agent.py`):
+  the only LLM-driven decision-maker. Required Pydantic-typed tool arguments
+  enforce step ordering structurally; the orchestrator emits a structured
+  `FinalizeReportRequest` as its terminal action.
+- **Research worker** (`openai_agents/workflows/research_agents/research_worker_agent.py`):
+  the orchestrator fans this small sub-agent out via `WebSearchTool` for each
+  parallel subquery.
+- **Activities**: `enterprise_data_activities.py` (proprietary data lookup
+  with retry-recoverable failure injection) and `image_generation_activity.py`
+  (gpt-image generation, with a cached fast-path for repeatable demos).
+- **FastAPI backend** (`ui/backend/main.py`): a thin HTTP layer that starts
+  workflows, forwards updates and queries, and serves the static frontend.
+- **Frontend** (`ui/index.html`): vanilla-JS chat UI that polls the workflow
+  for state and renders a report card on completion.
 
 ## Prerequisites
 
-1. **Python 3.10+** - Required for the demos
-2. Temporal Server - Must be running locally on localhost:7233 OR Connect to [Temporal Cloud](https://temporal.io)
-3. **OpenAI API Key** - Set as environment variable `OPENAI_API_KEY` in .env file (note, you will need enough quota on in your [OpenAI account](https://platform.openai.com/api-keys) to run this demo)
-4. **PDF Generation Dependencies** - Required for PDF output (optional)
-
-## Install / Upgrade Temporal CLI
-You'll need the latest version to run the demo.
-
-```bash
-# Install Temporal CLI
-curl -sSf https://temporal.download/cli.sh | sh
-
-# Alternately, upgrade to the latest version:
-brew upgrade temporal
-```
-
-### Run Temporal Server Locally
-
-```
-# Start Temporal server
-temporal server start-dev
-```
-
-### Or, Connect to Temporal Cloud
-
-1. Uncomment the following line in your `.env` file:
-
-```
-# TEMPORAL_PROFILE=cloud
-```
-
-2. Run the following commands:
-
-```
-temporal config set --profile cloud --prop address --value "CLOUD_REMOTE_ADDRESS"
-temporal config set --profile cloud --prop namespace  --value "CLOUD_NAMESPACE"
-temporal config set --profile cloud --prop api_key --value "CLOUD_API_KEY"
-```
-
-See https://docs.temporal.io/develop/environment-configuration for more details.
-
-For ease of use, all environemnt variables may be defined through the `.env` file,
-at the root of the repository. See the .env-sample file for details.
+- Python 3.10+
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for dependency
+  management
+- A Temporal server — either `temporal server start-dev` locally on
+  `127.0.0.1:7233` (the default) or [Temporal Cloud](https://temporal.io/cloud)
+- An [OpenAI API key](https://platform.openai.com/api-keys) with access to
+  the orchestrator model (`gpt-5` by default), the research-worker model
+  (`gpt-5-mini` by default), and an image model (`gpt-image-2-2026-04-21`
+  by default). All three are overridable via env vars
+  (`ORCHESTRATOR_MODEL`, `RESEARCH_WORKER_MODEL`, `OPENAI_IMAGE_MODEL`).
+  See [Lower-cost setup](#lower-cost-setup) below if you don't have access
+  to those defaults.
 
 ## Setup
 
-1. Clone this repository
-2. Install dependencies:
+```bash
+# 1. Install dependencies
+uv sync
 
-   ```bash
-   uv sync
-   ```
+# 2. Copy and edit the env file
+cp .env-sample .env
+$EDITOR .env  # at minimum, set OPENAI_API_KEY
 
-   Note: If uv is not installed, please install uv by following the instructions [here](https://docs.astral.sh/uv/getting-started/installation/)
+# 3. Start a local Temporal dev server (in its own terminal)
+temporal server start-dev
+```
 
-3. Set your [OpenAI API](https://platform.openai.com/api-keys) key:
-   ```bash
-   # Add OpenAI API key in .env file (copy .env-sample to .env and update the OPENAI_API_KEY)
-   OPENAI_API_KEY=''
-   ```
-
-## Running the Demos
-
-### 1. Start the Worker
-
-In one terminal, start the worker that will handle all workflows:
+To use Temporal Cloud instead, uncomment `TEMPORAL_PROFILE=cloud` in `.env`
+and run:
 
 ```bash
+temporal config set --profile cloud --prop address   --value "<your-cloud-address>"
+temporal config set --profile cloud --prop namespace --value "<your-namespace>"
+temporal config set --profile cloud --prop api_key   --value "<your-api-key>"
+```
+
+See [Temporal environment configuration](https://docs.temporal.io/develop/python/environment-configuration)
+for details.
+
+### Lower-cost setup
+
+If you don't have access to `gpt-5` or `gpt-image-2`, override the
+defaults with smaller / earlier-generation models:
+
+```bash
+# in .env
+ORCHESTRATOR_MODEL='gpt-5-mini'      # falls back from gpt-5
+RESEARCH_WORKER_MODEL='gpt-5-mini'   # already the default
+OPENAI_IMAGE_MODEL='gpt-image-1'     # falls back from gpt-image-2
+```
+
+To skip live image generation entirely, set `DEMO_RESEARCH_IMAGE_PATH`
+to a previously generated file (under `temp_images/`, which is
+gitignored). The activity returns the cached path immediately instead of
+calling the image API.
+
+## Running the demo
+
+Three terminals:
+
+```bash
+# Terminal 1: worker
 uv run openai_agents/run_worker.py
+#   or, with the demo-friendly defaults baked in:
+bash scripts/start-clean-worker
+
+# Terminal 2: FastAPI backend + static frontend
+uv run ui/backend/main.py
+#   serves http://127.0.0.1:8234
+
+# Terminal 3: Temporal dev server (if not running already)
+temporal server start-dev
+#   Temporal UI: http://localhost:8233
 ```
 
-Keep this running throughout your demo sessions. The worker registers all available workflows and activities.
-You can run multiple copies of workers for faster workflow processing. Please ensure `OPENAI_API_KEY` is set before
-you attempt to start the worker.
+Open <http://127.0.0.1:8234> in a browser, ask a research question, answer
+the two clarifying questions, and watch the workflow run through to a final
+markdown report. The Temporal UI shows the workflow history side-by-side.
 
-### 2. Run the UI
+![Chat UI on the left, Temporal workflow execution graph on the right, mid-run.](ui/public/images/demo.png)
 
-In another terminal:
+In the screenshot above, the two clarifying questions have been answered
+and the orchestrator is fanning out research workers in parallel. The
+Temporal UI on the right shows what's actually happening underneath:
+each `invoke_model_activity` is one LLM call (the orchestrator's tool
+call or a `ResearchWorkerAgent` sub-agent), and `submit_elicitation_response`
+is the workflow update that delivered each user answer. The chat UI is
+just a thin view over this workflow state.
+
+The full end-to-end run takes 1–3 minutes depending on web-search latency
+and which failure-injection beats are enabled.
+
+## Demo helpers
+
+The `scripts/` directory contains presentation helpers, not production
+patterns:
+
+- `start-clean-worker [name]` — start a worker with the recording-friendly
+  defaults baked in. Pass a name to run multiple instances in parallel
+  behind the same task queue.
+- `crash-worker [name]` — SIGKILL a named worker. Building block for
+  worker-death experiments; see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for
+  why the worker-death recipe isn't documented as a turn-key beat yet.
+- `stop-demo-workers` — graceful shutdown of all worker instances tracked
+  by `.demo-worker*.pid`.
+- `check-ports` — quickly check who's listening on 7233 / 8233 / 8234.
+- `show-history <workflow-id>` — pretty-printed activity / failure /
+  completion event timeline from `temporal workflow show`.
+- `demo-status <workflow-id>` — hit the backend status and result endpoints
+  for a workflow.
+
+The `DEMO_*` environment variables in `.env-sample` control how aggressive
+the failure injection is. The shipped defaults are recording-clean (no
+crashes, fast warehouse). Flip them on for the failure-recovery moment —
+see the next section.
+
+## Failure injection
+
+The `DataWarehouseLookup` activity is the place where Temporal's recovery
+behavior shines. Two demo knobs in `.env` (or in the worker's environment)
+control how it misbehaves:
+
+| Env var | What it does |
+| --- | --- |
+| `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` | Number of attempts that fail before the activity succeeds. `0` = always succeed on attempt 1. `8` = attempts 1–8 fail, attempt 9 succeeds. |
+| `DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS` | Latency of attempt 1 only. Subsequent attempts use a fixed 0.6s delay. |
+
+Defined in `openai_agents/workflows/enterprise_data_activities.py`. The
+activity's retry policy (4-second fixed backoff, max 10 attempts) lives in
+`openai_agents/workflows/research_agents/orchestrator_agent.py`.
+
+### Recoverable activity failure
+
+Temporal retries the activity in place. With `RETRY_FAILURES='8'` the
+audience sees 8 failed attempts and then a successful 9th attempt — about
+38s end-to-end (8 short attempts plus 8 × 4-second retry backoffs), with
+the workflow continuing without rerunning earlier work.
+
+Either edit `.env` (the worker reads it via `load_dotenv()`):
 
 ```bash
-uv run ui/backend/main.py
+DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
+DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
 ```
 
-This will launch the Interactive Research App on http://0.0.0.0:8234
+…or `export` the values in the shell that starts the worker:
 
-![UI Interface](ui/public/images/ui_img.png "UI Interface Img")
+```bash
+export DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
+export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
+bash scripts/start-clean-worker
+```
 
-### 3. Use the Demo
+What to highlight in the Temporal UI:
 
-In Google Chrome, go to chrome://flags/ search for "Split View" and enable it.
+- The workflow's pending activity stays as `DataWarehouseLookup` for ~32s.
+- Click the activity → **Pending Activities** shows attempt count climbing
+  and the `lastFailure` message: *"Simulated remote connection reset…"*.
+- The earlier completed events (clarifications, search summaries) are
+  unchanged. The retry only re-runs the failing activity.
+- After attempt 9 the activity completes and the workflow proceeds.
 
-Close and re-open Chrome for it to take effect.
+### Inspecting after the fact
 
-Open a new browser window with two tabs:
+```bash
+bash scripts/show-history <workflow-id>
+```
 
-* Tab 1: Application UI — http://0.0.0.0:8234
-* Tab 2: Temporal UI — http://localhost:8233/ (OSS) or https://cloud.temporal.io/namespaces/XXX/workflows (Temporal Cloud)
-
-Right-click Tab 1, choose Add Tab to New Split View, and click the Workflows tab as the right-hand side.
-
-Re-position the window divider so that the chat UI is taking up approximately 1/3 of the screen, leading the rest for the Temporal UI.
-
-<img width="1498" height="807" alt="Side-by-side view of application UI and Temporal UI" src="https://github.com/user-attachments/assets/e236a56c-e0bb-4688-a4a1-5484441bfbae" />
-
-
-**Output:**
-
-- `research_report.md` - Comprehensive markdown report
-- `pdf_output/research_report.pdf` - Professionally formatted PDF (if PDF generation is available)
-
-**Note:** The interactive workflow may take 2-3 minutes to complete due to web searches and report generation.
+Prints a TSV of activity-scheduled / started / failed / completed events,
+the attempt counter, and the failure message — handy for stepping through
+what Temporal actually did.
 
 ## Development
 
-### Code Quality Tools
-
 ```bash
-# Format code
-uv run -m black .
-uv run -m isort .
+# Lint
+uv run ruff check --select F401,F841
 
-# Type checking
-uv run -m mypy --check-untyped-defs --namespace-packages .
+# Type check
 uv run pyright .
 ```
 
+## Known issues
+
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for documented limitations and
+their planned fixes — silent subquery failures, retry-policy ceiling,
+inherited commercial fonts, and a couple of others.
+
+## Attribution
+
+Original work © Steve Androulakis. Substantial enhancements for the
+agentic structure by Johann Schleier-Smith — see [CHANGELOG.md](CHANGELOG.md)
+for the per-area summary and `git log` for the per-commit history.
+
 ## License
 
-MIT License - see the original project for full license details.
+MIT — see [LICENSE](LICENSE).

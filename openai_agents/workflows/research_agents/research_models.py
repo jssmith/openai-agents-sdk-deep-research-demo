@@ -1,101 +1,64 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
 
 from pydantic import BaseModel
 
 
-class ClarificationInput(BaseModel):
-    """Input for providing clarification responses"""
+class ReportData(BaseModel):
+    """Final report payload surfaced to the UI."""
 
-    responses: Dict[str, str]  # question -> answer mapping
-
-
-class SingleClarificationInput(BaseModel):
-    """Input for providing a single clarification response"""
-
-    question_index: int
-    answer: str
+    short_summary: str
+    markdown_report: str
+    follow_up_questions: list[str]
 
 
 class UserQueryInput(BaseModel):
-    """Input for initial user research query"""
+    """Input for initial user research query."""
 
     query: str
 
 
-class ResearchStatusInput(BaseModel):
-    """Input for getting research status"""
+class ElicitationResponseInput(BaseModel):
+    """Input from the FE-BE contract: a response to one pending elicitation."""
 
-    pass
+    elicitation_id: str
+    response: str
 
 
-@dataclass
-class ResearchInteraction:
-    """Represents a research interaction with clarifications"""
+class Elicitation(BaseModel):
+    """A request from the agent for one piece of human input.
 
-    original_query: str
-    clarification_questions: Optional[List[str]] = None
-    clarification_responses: Optional[Dict[str, str]] = None
-    current_question_index: int = 0
-    enriched_query: Optional[str] = None
-    final_result: Optional[str] = None
-    report_data: Optional[Any] = None  # Will hold ReportData object
-    status: str = "pending"  # pending, awaiting_clarifications, collecting_answers, researching, completed
+    Each elicitation has a unique id (assigned by the workflow). The UI sees
+    pending and completed elicitations through get_status; responding to a
+    pending one moves it to completed.
+    """
 
-    def get_current_question(self) -> Optional[str]:
-        """Get the current question that needs an answer"""
-        if not self.clarification_questions or self.current_question_index >= len(
-            self.clarification_questions
-        ):
-            return None
-        return self.clarification_questions[self.current_question_index]
-
-    def has_more_questions(self) -> bool:
-        """Check if there are more questions to answer"""
-        if not self.clarification_questions:
-            return False
-        return self.current_question_index < len(self.clarification_questions)
-
-    def answer_current_question(self, answer: str) -> bool:
-        """Answer the current question and advance. Returns True if more questions remain."""
-        if not self.clarification_questions:
-            return False
-
-        if self.clarification_responses is None:
-            self.clarification_responses = {}
-
-        # Store answer with question_index format for compatibility
-        question_key = f"question_{self.current_question_index}"
-        self.clarification_responses[question_key] = answer
-
-        self.current_question_index += 1
-        return self.has_more_questions()
-
-    def __str__(self):
-        questions_progress = (
-            f"{self.current_question_index}/{len(self.clarification_questions or [])}"
-        )
-        return f"Query: {self.original_query}, Status: {self.status}, Questions: {questions_progress}"
+    id: str
+    message: str
+    response: Optional[str] = None
 
 
 class ResearchInteractionDict(BaseModel):
-    """Compatibility wrapper that provides ResearchInteraction-like interface"""
+    """Snapshot of workflow state surfaced to the UI through the get_status query."""
 
     original_query: str | None = None
-    clarification_questions: list[str] = []
-    clarification_responses: dict[str, str] = {}
-    current_question_index: int = 0
-    current_question: str | None = None
+
+    # Status enum: pending | awaiting_user_input | researching | completed | ended
     status: str = "pending"
+
+    # Generic elicitation contract. The agent emits ONE elicitation at a time.
+    pending_elicitation: Elicitation | None = None
+    completed_elicitations: list[Elicitation] = []
+
     research_completed: bool = False
-    final_result: str | None = None
 
-    def get_current_question(self) -> str | None:
-        """Get the current question that needs an answer"""
-        return self.current_question
+    # Coarse phase the orchestrator agent is currently in: planning |
+    # collecting | writing | None. Used by the UI to advance its progress
+    # timeline against real backend state.
+    current_activity: str | None = None
 
-    def has_more_questions(self) -> bool:
-        """Check if there are more questions to answer"""
-        return self.current_question_index < len(self.clarification_questions)
+    # Topic-specific progress labels the agent committed during its first
+    # elicit_user call. Shape: {planning: {title, detail}, collecting: {...},
+    # writing: {...}}. None until the agent has issued the plan.
+    progress_plan: dict[str, Dict[str, str]] | None = None

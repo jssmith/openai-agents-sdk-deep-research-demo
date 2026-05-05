@@ -3,35 +3,49 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from datetime import timedelta
 
+from agents import set_tracing_disabled
 from dotenv import load_dotenv
 from temporalio.client import Client
 from temporalio.common import RetryPolicy
 from temporalio.contrib.openai_agents import ModelActivityParameters, OpenAIAgentsPlugin
-from temporalio.contrib.pydantic import pydantic_data_converter
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
+from openai_agents.workflows.enterprise_data_activities import (
+    fetch_data_warehouse_context,
+)
 from openai_agents.workflows.image_generation_activity import generate_image
 from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchWorkflow,
-    process_clarification,
 )
-from openai_agents.workflows.pdf_generation_activity import generate_pdf
 
 # Load environment variables
 load_dotenv()
 
 TEMPORAL_TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "research-queue")
 
-# Configure logging
+# Quiet noisy loggers. The default basicConfig level is INFO, which makes
+# httpx log every outbound request — too chatty for a demo terminal.
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("openai.agents").setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# The OpenAI Agents SDK posts traces to /v1/traces/ingest by default.
+# That endpoint isn't enabled for many API keys / orgs and returns 400,
+# which clutters demo output without affecting workflow execution.
+set_tracing_disabled(True)
 
 
 async def main():
     logging.basicConfig(level=logging.INFO)
+    pid_file = Path(os.getenv("DEMO_WORKER_PID_FILE", ".demo-worker.pid"))
+    pid_file.write_text(str(os.getpid()))
+    max_concurrent_activities = int(
+        os.getenv("DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES", "4")
+    )
 
     config = ClientConfig.load_client_connect_config()
     config.setdefault("target_host", "localhost:7233")
@@ -46,8 +60,12 @@ async def main():
         plugins=[
             OpenAIAgentsPlugin(
                 model_params=ModelActivityParameters(
-                    start_to_close_timeout=timedelta(seconds=200),
-                    schedule_to_close_timeout=timedelta(seconds=500),
+                    # 30s is enough for typical gpt-5 reasoning turns and
+                    # surfaces hung LLM calls quickly in the demo.
+                    start_to_close_timeout=timedelta(seconds=30),
+                    # schedule_to_close caps total time across retries; sized
+                    # for a few retries of a hung call before giving up.
+                    schedule_to_close_timeout=timedelta(seconds=180),
                     retry_policy=RetryPolicy(
                         backoff_coefficient=2.0,
                         initial_interval=timedelta(seconds=1),
@@ -56,20 +74,22 @@ async def main():
                 )
             ),
         ],
-        data_converter=pydantic_data_converter,
     )
 
-    print("Starting worker...")
+    print(
+        "Starting worker..."
+        f" max_concurrent_activities={max_concurrent_activities}"
+    )
     worker = Worker(
         client,
         task_queue=TEMPORAL_TASK_QUEUE,
+        max_concurrent_activities=max_concurrent_activities,
         workflows=[
             InteractiveResearchWorkflow,
         ],
         activities=[
-            generate_pdf,
             generate_image,
-            process_clarification,
+            fetch_data_warehouse_context,
         ],
     )
     await worker.run()
