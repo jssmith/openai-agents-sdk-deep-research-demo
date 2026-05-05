@@ -161,6 +161,15 @@ class InteractiveResearchWorkflow:
                 result = await Runner.run(worker, input_str)
                 return result.final_output_as(SearchSummary)
             except Exception as e:
+                # Known limitation: a failing subquery is logged and dropped,
+                # and the orchestrator only sees the surviving summaries. The
+                # finalize_report schema requires search_summaries with
+                # min_length=3, so 2 or more sibling failures will dead-end
+                # the agent in finalization with an opaque schema error
+                # rather than a useful message. Future work: surface a
+                # structured per-subquery failure to the agent so it can
+                # retry, or raise here and let the orchestrator's retry
+                # surface kick in.
                 workflow.logger.warning(f"Research worker failed for {q!r}: {e}")
                 return None
 

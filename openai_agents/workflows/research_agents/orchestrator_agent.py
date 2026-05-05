@@ -147,6 +147,13 @@ class FinalizeReportRequest(BaseModel):
     follow_up_questions: Annotated[list[str], Field(min_length=2, max_length=5)]
     image_path: Annotated[str, Field(min_length=1)]
     warehouse_summary: Annotated[str, Field(min_length=1)]
+    # min_length=3 means run_parallel_research must yield at least three
+    # SearchSummary objects. tool_run_parallel_research currently swallows
+    # individual subquery failures (see the comment in
+    # interactive_research_workflow.tool_run_parallel_research); if more than
+    # max(0, dispatched - 3) subqueries fail, finalization will trip this
+    # validator with an opaque schema error. See that function's TODO for the
+    # planned fix.
     search_summaries: Annotated[list[SearchSummary], Field(min_length=3)]
 
 
