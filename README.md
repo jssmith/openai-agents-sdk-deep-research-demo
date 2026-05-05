@@ -10,31 +10,34 @@ calling tools.
 
 This repository builds on the original
 [Temporal Interactive Deep Research demo by @steveandroulakis](https://github.com/steveandroulakis/openai-agents-demos)
-and has since diverged substantially toward an agentic structure suitable for
-talks and live demos. See [What's new in this fork](#whats-new-in-this-fork)
-for details.
+and has since diverged toward an agentic structure suitable for talks and
+live demos. See [CHANGELOG.md](CHANGELOG.md) for the diff against the
+upstream snapshot.
 
 ## Architecture
 
-```
-                      ┌────────────────────────────────────────┐
-   user query  ──▶    │  InteractiveResearchWorkflow           │
-                      │  (Temporal workflow, deterministic)    │
-                      │                                        │
-                      │   ┌────────────────────────────────┐   │
-                      │   │  OrchestratorAgent             │   │
-                      │   │  drives every step via tools   │   │
-                      │   └─────┬─────────────┬──────┬─────┘   │
-                      │         │             │      │         │
-                      │  elicit_user   run_parallel  query_…  generate_…
-                      │         │      _research    warehouse  research_image
-                      │         ▼             │      │         │
-                      │  pending_elicitation  ▼      ▼         ▼
-                      └─────────┬───────  ResearchWorkerAgent  Activities
-                                │             (web_search)    (data warehouse,
-                                │                              image generation)
-                                ▼
-                          FastAPI BFF  ◀──── browser UI (chat + report card)
+```mermaid
+flowchart TB
+    Browser["Browser UI<br/>chat + report card"]
+    API["FastAPI backend<br/>ui/backend/main.py"]
+
+    subgraph WF["InteractiveResearchWorkflow (durable Temporal workflow)"]
+        direction TB
+        State["Workflow state<br/>query • elicitations • progress_plan • report"]
+        Orchestrator["OrchestratorAgent<br/>drives every step via tools"]
+        State --- Orchestrator
+    end
+
+    Worker["ResearchWorkerAgent<br/>(WebSearchTool, fanned out N times)"]
+    DataAct["DataWarehouseLookup<br/>activity"]
+    ImageAct["generate_image<br/>activity"]
+
+    Browser <-->|HTTP| API
+    API <-->|"start_workflow / execute_update / query"| WF
+    Orchestrator -->|"elicit_user (workflow tool)"| State
+    Orchestrator -->|run_parallel_research| Worker
+    Orchestrator -->|query_data_warehouse| DataAct
+    Orchestrator -->|generate_research_image| ImageAct
 ```
 
 - **Workflow** (`openai_agents/workflows/interactive_research_workflow.py`):
@@ -51,62 +54,10 @@ for details.
 - **Activities**: `enterprise_data_activities.py` (proprietary data lookup
   with retry-recoverable failure injection) and `image_generation_activity.py`
   (gpt-image generation, with a cached fast-path for repeatable demos).
-- **FastAPI backend** (`ui/backend/main.py`): thin BFF that starts workflows,
-  forwards updates and queries, and serves the static frontend.
+- **FastAPI backend** (`ui/backend/main.py`): a thin HTTP layer that starts
+  workflows, forwards updates and queries, and serves the static frontend.
 - **Frontend** (`ui/index.html`): vanilla-JS chat UI that polls the workflow
   for state and renders a report card on completion.
-
-## What's new in this fork
-
-Major changes since the
-[original snapshot](https://github.com/steveandroulakis/openai-agents-demos):
-
-- **Agentic refactor.** The original linear pipeline (Triage → Clarifying →
-  Instruction → Planner → Search → Writer → PDF) was folded into a single
-  orchestrator agent that drives the workflow through tool calls. Required
-  Pydantic-typed tool arguments enforce ordering — the runtime structurally
-  prevents skipping steps. Determinism comes from the workflow shape, not
-  post-hoc validators.
-- **Generic elicitation primitive.** Clarifying questions became a generic
-  one-at-a-time elicitation contract: the agent calls `elicit_user`, the
-  workflow publishes a single pending elicitation, the FE-BE contract
-  delivers the response back via a workflow update. Cleaner than dedicated
-  question/answer endpoints, and the same primitive handles any future
-  human-in-the-loop step.
-- **Parallel tool calls.** `query_data_warehouse` and
-  `generate_research_image` are issued in the same agent turn so they
-  execute concurrently. `run_parallel_research` fans out 4–6 research
-  worker sub-agents.
-- **Topic-specific UI labels.** On its first elicit, the orchestrator
-  commits a three-card progress plan (planning / collecting / writing) with
-  topic-specific titles and details. The UI advances against the workflow's
-  `current_activity` rather than a generic boilerplate timeline.
-- **Output-typed termination.** The orchestrator finalizes by emitting a
-  structured `FinalizeReportRequest` as its final response, rather than
-  calling a `finalize_report` tool — gpt-5 occasionally serialized large
-  tool arguments as a text message, which left `research_completed=False`.
-- **Demo-friendly failure injection.** `enterprise_data_activities.py`
-  exposes `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` and related knobs to stage a
-  retry-recoverable failure on demand. `scripts/crash-worker` SIGKILLs a
-  named worker instance for the failure-recovery beat. Off by default for
-  clean recordings; one env-var flip turns the moment back on.
-- **Cached image fast-path.** `DEMO_RESEARCH_IMAGE_PATH` skips live image
-  generation by pointing at a saved jpeg/png. Enables fast, deterministic
-  reruns during recording sessions.
-- **UI overhaul.** Report card with download, dynamic title pulled from the
-  markdown H1, full-report page driven by URL-based workflow IDs, amber
-  "Still researching…" state, no flicker on phase transitions.
-- **Stack bump.** `temporalio` 1.27.0+, `openai-agents` 0.14.6+,
-  `gpt-5`/`gpt-5-mini` for orchestrator and worker.
-- **PDF generation removed.** Was unused after the refactor; pulling the
-  `weasyprint` dependency makes the demo install cleanly on macOS without
-  cairo/pango.
-- **Cleanup for publication.** Legacy per-stage agent files
-  (`triage_agent.py`, `clarifying_agent.py`, `instruction_agent.py`,
-  `planner_agent.py`, `search_agent.py`, `pdf_generator_agent.py`,
-  `writer_agent.py`, `research_manager.py`) and the `serializable_model_activity`
-  shim were removed once the orchestrator subsumed them. The full change
-  history is in the git log.
 
 ## Prerequisites
 
@@ -155,7 +106,7 @@ uv run openai_agents/run_worker.py
 #   or, with the demo-friendly defaults baked in:
 bash scripts/start-clean-worker
 
-# Terminal 2: BFF + static frontend
+# Terminal 2: FastAPI backend + static frontend
 uv run ui/backend/main.py
 #   serves http://127.0.0.1:8234
 
@@ -167,8 +118,6 @@ temporal server start-dev
 Open <http://127.0.0.1:8234> in a browser, ask a research question, answer
 the two clarifying questions, and watch the workflow run through to a final
 markdown report. The Temporal UI shows the workflow history side-by-side.
-
-![UI screenshot](ui/public/images/ui_img.png)
 
 The full end-to-end run takes 1–3 minutes depending on web-search latency
 and which failure-injection beats are enabled.
@@ -189,7 +138,7 @@ patterns:
 - `check-ports` — quickly check who's listening on 7233 / 8233 / 8234.
 - `show-history <workflow-id>` — pretty-printed activity / failure /
   completion event timeline from `temporal workflow show`.
-- `demo-status <workflow-id>` — hit the BFF status and result endpoints
+- `demo-status <workflow-id>` — hit the backend status and result endpoints
   for a workflow.
 
 The `DEMO_*` environment variables in `.env-sample` control how aggressive
@@ -218,14 +167,22 @@ Temporal retries the activity in place. The audience sees N failed attempts
 in the workflow history, ~4s gaps between them, and then a successful
 attempt that lets the workflow continue without rerunning earlier work.
 
+Either edit `.env` (the worker reads it via `load_dotenv()`):
+
 ```bash
-# in .env, or exported in the worker's shell
 DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
 DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
+```
 
-# one worker is enough
+…or `export` the values in the shell that starts the worker:
+
+```bash
+export DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
+export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
 bash scripts/start-clean-worker
 ```
+
+One worker is enough.
 
 What to highlight in the Temporal UI:
 
@@ -242,12 +199,23 @@ Temporal moves the in-flight activity to a different worker. The audience
 sees the activity stall when the worker dies, then resume on a fresh worker
 without losing earlier state.
 
+Either edit `.env`:
+
 ```bash
-# in .env
 DEMO_DATA_WAREHOUSE_RETRY_FAILURES='0'
 DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='8'
+```
 
-# two workers behind the same task queue
+…or export in each worker's shell:
+
+```bash
+export DEMO_DATA_WAREHOUSE_RETRY_FAILURES='0'
+export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='8'
+```
+
+Then start two workers behind the same task queue:
+
+```bash
 bash scripts/start-clean-worker        # writes .demo-worker-clean.pid
 bash scripts/start-clean-worker 2      # writes .demo-worker-clean-2.pid
 ```
@@ -294,10 +262,9 @@ uv run pyright .
 
 ## Attribution
 
-Original work © Steve Androulakis (see commit history for the upstream
-import). Substantial enhancements for the agentic structure described in
-[What's new in this fork](#whats-new-in-this-fork) by Johann Schleier-Smith.
-Full per-commit attribution is in `git log`.
+Original work © Steve Androulakis. Substantial enhancements for the
+agentic structure by Johann Schleier-Smith — see [CHANGELOG.md](CHANGELOG.md)
+for the per-area summary and `git log` for the per-commit history.
 
 ## License
 

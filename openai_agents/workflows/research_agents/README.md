@@ -33,8 +33,8 @@ image, and emits the final report itself as a structured response.
   `SearchSummary`.
 
 - **`research_models.py`** — Pydantic models shared across the workflow
-  and the BFF: `UserQueryInput`, `ElicitationResponseInput`, `Elicitation`,
-  `ReportData`, `ResearchInteractionDict`.
+  and the FastAPI backend: `UserQueryInput`, `ElicitationResponseInput`,
+  `Elicitation`, `ReportData`, `ResearchInteractionDict`.
 
 ## Execution shape
 
