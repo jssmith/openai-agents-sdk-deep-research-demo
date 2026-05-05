@@ -25,6 +25,8 @@ from openai_agents.workflows.interactive_research_workflow import (
 # Load environment variables
 load_dotenv()
 
+TEMPORAL_TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "research-queue")
+
 # Quiet noisy loggers. The default basicConfig level is INFO, which makes
 # httpx log every outbound request — too chatty for a demo terminal.
 logging.getLogger("openai").setLevel(logging.ERROR)
@@ -80,7 +82,7 @@ async def main():
     )
     worker = Worker(
         client,
-        task_queue="research-queue",
+        task_queue=TEMPORAL_TASK_QUEUE,
         max_concurrent_activities=max_concurrent_activities,
         workflows=[
             InteractiveResearchWorkflow,
