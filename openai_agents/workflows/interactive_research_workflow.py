@@ -22,6 +22,11 @@ from temporalio.exceptions import ApplicationError
 ORCHESTRATOR_MAX_TURNS = int(os.getenv("ORCHESTRATOR_MAX_TURNS", "30"))
 
 with workflow.unsafe.imports_passed_through():
+    # Eagerly load pydantic's transitive deps so the workflow sandbox
+    # captures them in its initial-import set; otherwise they're imported
+    # on first model instantiation and the sandbox emits a warning.
+    import annotated_types  # noqa: F401
+
     from agents import Runner
 
     from openai_agents.workflows.research_agents.orchestrator_agent import (

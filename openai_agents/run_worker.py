@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 
+from agents import set_tracing_disabled
 from dotenv import load_dotenv
 from temporalio.client import Client
 from temporalio.common import RetryPolicy
@@ -24,9 +25,16 @@ from openai_agents.workflows.interactive_research_workflow import (
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Quiet noisy loggers. The default basicConfig level is INFO, which makes
+# httpx log every outbound request — too chatty for a demo terminal.
 logging.getLogger("openai").setLevel(logging.ERROR)
 logging.getLogger("openai.agents").setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# The OpenAI Agents SDK posts traces to /v1/traces/ingest by default.
+# That endpoint isn't enabled for many API keys / orgs and returns 400,
+# which clutters demo output without affecting workflow execution.
+set_tracing_disabled(True)
 
 
 async def main():
