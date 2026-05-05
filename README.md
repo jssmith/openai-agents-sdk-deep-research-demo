@@ -140,6 +140,16 @@ Open <http://127.0.0.1:8234> in a browser, ask a research question, answer
 the two clarifying questions, and watch the workflow run through to a final
 markdown report. The Temporal UI shows the workflow history side-by-side.
 
+![Chat UI on the left, Temporal workflow execution graph on the right, mid-run.](ui/public/images/demo.png)
+
+In the screenshot above, the two clarifying questions have been answered
+and the orchestrator is fanning out research workers in parallel. The
+Temporal UI on the right shows what's actually happening underneath:
+each `invoke_model_activity` is one LLM call (the orchestrator's tool
+call or a `ResearchWorkerAgent` sub-agent), and `submit_elicitation_response`
+is the workflow update that delivered each user answer. The chat UI is
+just a thin view over this workflow state.
+
 The full end-to-end run takes 1–3 minutes depending on web-search latency
 and which failure-injection beats are enabled.
 
