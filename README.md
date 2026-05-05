@@ -301,6 +301,12 @@ uv run ruff check --select F401,F841
 uv run pyright .
 ```
 
+## Known issues
+
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for documented limitations and
+their planned fixes — silent subquery failures, retry-policy ceiling,
+inherited commercial fonts, and a couple of others.
+
 ## Attribution
 
 Original work © Steve Androulakis. Substantial enhancements for the
