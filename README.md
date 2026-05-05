@@ -232,11 +232,22 @@ bash scripts/crash-worker 2   # kills .demo-worker-clean-2.pid
 
 What to highlight in the Temporal UI:
 
-- The activity's `lastHeartbeat` ages while the dead worker has the lock.
-- The schedule-to-close timeout (300s on this activity) ensures Temporal
-  reassigns it well before the workflow gives up.
-- The activity reappears as `Started` on the other worker; previously
-  completed events stay completed.
+- The activity stays in `Started` state on the dead worker for up to
+  `start_to_close_timeout` (15 seconds — see `query_data_warehouse` in
+  `orchestrator_agent.py`). The workflow looks stuck during this window
+  because Temporal can't tell the worker is gone until the timeout fires.
+- After 15s, the workflow history records `ActivityTaskTimedOut` (type:
+  `StartToClose`).
+- A retry is scheduled with the activity's 4-second backoff, then
+  `ActivityTaskStarted` on the surviving worker. The follow-up attempt
+  succeeds in ~0.6s (no `RETRY_FAILURES` configured, just the worker
+  swap).
+- Previously completed events (clarifications, search summaries) stay
+  completed. Only the in-flight activity is rerun.
+
+The "stuck" window before the retry is the moment to narrate: the worker
+is dead but Temporal hasn't given up — it's holding the activity until
+the per-attempt timeout fires, then it'll reassign cleanly.
 
 ### Inspecting after the fact
 
