@@ -161,9 +161,9 @@ patterns:
 - `start-clean-worker [name]` — start a worker with the recording-friendly
   defaults baked in. Pass a name to run multiple instances in parallel
   behind the same task queue.
-- `crash-worker [name]` — SIGKILL a named worker. Used during the
-  failure-recovery beat to demonstrate that Temporal resumes the workflow
-  on a fresh worker without losing state.
+- `crash-worker [name]` — SIGKILL a named worker. Building block for
+  worker-death experiments; see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for
+  why the worker-death recipe isn't documented as a turn-key beat yet.
 - `stop-demo-workers` — graceful shutdown of all worker instances tracked
   by `.demo-worker*.pid`.
 - `check-ports` — quickly check who's listening on 7233 / 8233 / 8234.
@@ -186,13 +186,13 @@ control how it misbehaves:
 | Env var | What it does |
 | --- | --- |
 | `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` | Number of attempts that fail before the activity succeeds. `0` = always succeed on attempt 1. `8` = attempts 1–8 fail, attempt 9 succeeds. |
-| `DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS` | Latency of attempt 1 only. `1s` is brisk; `8s` gives you time to SIGKILL the worker mid-attempt. |
+| `DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS` | Latency of attempt 1 only. Subsequent attempts use a fixed 0.6s delay. |
 
 Defined in `openai_agents/workflows/enterprise_data_activities.py`. The
 activity's retry policy (4-second fixed backoff, max 10 attempts) lives in
 `openai_agents/workflows/research_agents/orchestrator_agent.py`.
 
-### Recipe A — recoverable activity failure
+### Recoverable activity failure
 
 Temporal retries the activity in place. With `RETRY_FAILURES='8'` the
 audience sees 8 failed attempts and then a successful 9th attempt — about
@@ -214,8 +214,6 @@ export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
 bash scripts/start-clean-worker
 ```
 
-One worker is enough.
-
 What to highlight in the Temporal UI:
 
 - The workflow's pending activity stays as `DataWarehouseLookup` for ~32s.
@@ -224,70 +222,6 @@ What to highlight in the Temporal UI:
 - The earlier completed events (clarifications, search summaries) are
   unchanged. The retry only re-runs the failing activity.
 - After attempt 9 the activity completes and the workflow proceeds.
-
-### Recipe B — worker death mid-flight
-
-Temporal moves the in-flight activity to a different worker. The audience
-sees the activity stall when the worker dies, then resume on a fresh worker
-without losing earlier state.
-
-The orchestrator issues `query_data_warehouse` and `generate_research_image`
-as parallel tool calls. To force them onto *different* workers — so killing
-the one running the warehouse lookup doesn't also orphan the slower image
-activity — set worker concurrency to 1 in addition to the failure-injection
-knobs.
-
-Either edit `.env`:
-
-```bash
-DEMO_DATA_WAREHOUSE_RETRY_FAILURES='0'
-DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='8'
-DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES='1'
-```
-
-…or export in each worker's shell:
-
-```bash
-export DEMO_DATA_WAREHOUSE_RETRY_FAILURES='0'
-export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='8'
-export DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES='1'
-```
-
-Then start two workers behind the same task queue:
-
-```bash
-bash scripts/start-clean-worker        # writes .demo-worker-clean.pid
-bash scripts/start-clean-worker 2      # writes .demo-worker-clean-2.pid
-```
-
-Run the demo and watch the workflow until the data-warehouse activity
-starts (the orchestrator emits `query_data_warehouse`). While the 8-second
-attempt is in flight, kill whichever worker picked it up:
-
-```bash
-bash scripts/crash-worker     # kills .demo-worker-clean.pid
-# or
-bash scripts/crash-worker 2   # kills .demo-worker-clean-2.pid
-```
-
-What to highlight in the Temporal UI:
-
-- The activity stays in `Started` state on the dead worker for up to
-  `start_to_close_timeout` (15 seconds — see `query_data_warehouse` in
-  `orchestrator_agent.py`). The workflow looks stuck during this window
-  because Temporal can't tell the worker is gone until the timeout fires.
-- After 15s, the workflow history records `ActivityTaskTimedOut` (type:
-  `StartToClose`).
-- A retry is scheduled with the activity's 4-second backoff, then
-  `ActivityTaskStarted` on the surviving worker. The follow-up attempt
-  succeeds in ~0.6s (no `RETRY_FAILURES` configured, just the worker
-  swap).
-- Previously completed events (clarifications, search summaries) stay
-  completed. Only the in-flight activity is rerun.
-
-The "stuck" window before the retry is the moment to narrate: the worker
-is dead but Temporal hasn't given up — it's holding the activity until
-the per-attempt timeout fires, then it'll reassign cleanly.
 
 ### Inspecting after the fact
 
@@ -298,8 +232,6 @@ bash scripts/show-history <workflow-id>
 Prints a TSV of activity-scheduled / started / failed / completed events,
 the attempt counter, and the failure message — handy for stepping through
 what Temporal actually did.
-
-`.env-sample` has the same recipes inline as a quick reference.
 
 ## Development
 

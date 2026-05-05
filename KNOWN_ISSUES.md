@@ -31,6 +31,43 @@ the cost of hiding genuine failures from the agent.
 
 The inline code comments cross-link both ends of the contract.
 
+## Worker-death-mid-flight recipe needs more work
+
+**Where**: `scripts/crash-worker`, `scripts/start-clean-worker [name]`,
+the orchestrator's parallel tool calls in
+`openai_agents/workflows/research_agents/orchestrator_agent.py`.
+
+**Symptom**: there is no documented turn-key way to demo "kill the
+worker holding the in-flight activity and watch Temporal reassign it."
+The pieces exist — a multi-instance worker launcher, a SIGKILL helper
+keyed by pid file — but knowing *which* of the running workers picked
+up the data-warehouse activity in real time is awkward (you have to
+look up the activity's worker identity in the Temporal UI under demo
+time pressure), and the orchestrator runs `query_data_warehouse` and
+`generate_research_image` as parallel tool calls, so the wrong kill
+also orphans the image activity.
+
+**Why it's like this**: the recipe was drafted, but in practice during
+recordings we couldn't reliably identify the right worker fast enough
+to be confident in the beat. Pulled from the README rather than ship
+something that fails on stage.
+
+**Possible fixes**:
+- Make the crash-worker mechanism activity-aware: pick the activity to
+  fail by ID, look up its current worker through the SDK or Temporal
+  API, then SIGKILL that one specifically.
+- Or: pin the data-warehouse activity to a dedicated task queue and a
+  dedicated worker, so killing "the warehouse worker" is unambiguous
+  and doesn't touch the image worker.
+- Or: switch to an activity-internal failure that the workflow surface
+  treats as a worker death (`activity.fail` with a non-retryable error
+  after partial work), trading literal-worker-death for a
+  more reproducible reset.
+
+`scripts/crash-worker` and the multi-instance support in
+`scripts/start-clean-worker` are kept for ad-hoc experiments while
+this lands.
+
 ## `RETRY_FAILURES` is capped at 9 by `max_attempts=10`
 
 **Where**: retry policy on `query_data_warehouse` in
