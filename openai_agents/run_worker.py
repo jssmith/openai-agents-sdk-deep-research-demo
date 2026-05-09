@@ -44,7 +44,7 @@ async def main():
     pid_file = Path(os.getenv("DEMO_WORKER_PID_FILE", ".demo-worker.pid"))
     pid_file.write_text(str(os.getpid()))
     max_concurrent_activities = int(
-        os.getenv("DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES", "4")
+        os.getenv("DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES", "40")
     )
 
     config = ClientConfig.load_client_connect_config()

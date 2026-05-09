@@ -3,6 +3,7 @@ import os
 from agents import Agent, WebSearchTool
 from agents.model_settings import ModelSettings
 from dotenv import load_dotenv
+from openai.types.shared.reasoning import Reasoning
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -42,6 +43,10 @@ def new_research_worker_agent() -> Agent:
         instructions=INSTRUCTIONS,
         model=os.getenv("RESEARCH_WORKER_MODEL", "gpt-5-mini"),
         tools=[WebSearchTool(search_context_size="low")],
-        model_settings=ModelSettings(tool_choice="required"),
+        model_settings=ModelSettings(
+            tool_choice="required",
+            reasoning=Reasoning(effort="low"),
+            max_tokens=1500,
+        ),
         output_type=SearchSummary,
     )
