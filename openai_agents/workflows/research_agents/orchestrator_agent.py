@@ -35,6 +35,10 @@ from openai_agents.workflows.research_agents.research_worker_agent import (
     SearchSummary,
 )
 
+# Read at import time so replaying a workflow uses the same activity policy even
+# if a replacement worker has different environment variables.
+IMAGE_MAX_ATTEMPTS = int(os.getenv("DEMO_IMAGE_MAX_ATTEMPTS", "1") or "1")
+
 # ctx.context is always an InteractiveResearchWorkflow at runtime, but we type
 # it as Any here to avoid a circular import (the workflow imports this module).
 
@@ -236,6 +240,7 @@ async def generate_research_image(
         generate_image,
         args=[image_prompt, None],
         start_to_close_timeout=timedelta(seconds=180),
+        retry_policy=RetryPolicy(maximum_attempts=IMAGE_MAX_ATTEMPTS),
     )
     if not result.success or not result.image_file_path:
         raise RuntimeError(

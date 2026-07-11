@@ -140,6 +140,34 @@ Open <http://127.0.0.1:8234> in a browser, ask a research question, answer
 the two clarifying questions, and watch the workflow run through to a final
 markdown report. The Temporal UI shows the workflow history side-by-side.
 
+### Demo profiles
+
+The worker supports two presentation profiles through `DEMO_PROFILE`:
+
+```bash
+# Fast path: no injected warehouse failures
+DEMO_PROFILE=clean bash scripts/start-clean-worker
+
+# Recovery path: warehouse attempts 1-2 fail, attempt 3 succeeds
+DEMO_PROFILE=recovery bash scripts/start-clean-worker
+```
+
+Both profiles bound model activities to a 35-second attempt, a 75-second
+schedule-to-close window, and two total attempts. A retry selects the faster
+`ORCHESTRATOR_FALLBACK_MODEL` (default `gpt-5-mini`). The underlying OpenAI
+HTTP timeout is 30 seconds, so a request is cancelled before Temporal starts
+the retry instead of continuing indefinitely in the background.
+
+For the worker-recovery beat, wait until the first clarification is visible,
+run `bash scripts/crash-worker`, restart the worker with the same profile, and
+then submit the answer. The pending question remains in workflow state and the
+workflow accepts the update after the replacement worker polls the task queue.
+
+For the later activity-retry beat, use the `recovery` profile and inspect the
+`DataWarehouseLookup` activity in the Temporal UI. The first two attempts fail
+with the simulated connection reset, and the third attempt succeeds without
+re-running completed clarifications or research calls.
+
 ![Chat UI on the left, Temporal workflow execution graph on the right, mid-run.](ui/public/images/demo.png)
 
 In the screenshot above, the two clarifying questions have been answered
