@@ -69,6 +69,13 @@ async def main():
                 model_provider=AttemptAwareOpenAIProvider(
                     fallback_model=demo_settings.model_fallback,
                     http_timeout_seconds=demo_settings.model_http_timeout_seconds,
+                    local_model=demo_settings.model_local,
+                    local_base_url=demo_settings.model_local_base_url,
+                    local_api_key="ollama",
+                    local_http_timeout_seconds=(
+                        demo_settings.model_local_http_timeout_seconds
+                    ),
+                    local_attempt=demo_settings.model_local_attempt,
                 ),
                 model_params=ModelActivityParameters(
                     start_to_close_timeout=timedelta(
@@ -99,6 +106,9 @@ async def main():
         f" model_timeout={demo_settings.model_start_to_close_seconds}s"
         f" model_max_attempts={demo_settings.model_max_attempts}"
         f" fallback_model={demo_settings.model_fallback}"
+        f" local_model={demo_settings.model_local or '(disabled)'}"
+        f" local_attempt={demo_settings.model_local_attempt}"
+        f" total_budget={demo_settings.total_budget_seconds}s"
     )
     worker = Worker(
         client,

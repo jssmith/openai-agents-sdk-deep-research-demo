@@ -20,6 +20,15 @@ from temporalio.exceptions import ApplicationError
 
 # Read at module-import time so the workflow body stays deterministic.
 ORCHESTRATOR_MAX_TURNS = int(os.getenv("ORCHESTRATOR_MAX_TURNS", "30"))
+# Hard wall-clock budget for the NON-INTERACTIVE portion of a run. If the
+# orchestrator (all model layers) hasn't produced a report within this many
+# seconds of active compute, the workflow abandons it and returns the
+# deterministic floor instead, so the demo always finishes in bounded time.
+# Elicitation waits for human input are excluded from this budget.
+TOTAL_BUDGET_SECONDS = int(os.getenv("DEMO_TOTAL_BUDGET_SECONDS", "300"))
+# How often the budget guard re-evaluates the (moving) deadline. Smaller = more
+# timer events; larger = coarser deadline granularity.
+BUDGET_RECHECK_SECONDS = int(os.getenv("DEMO_BUDGET_RECHECK_SECONDS", "5"))
 
 with workflow.unsafe.imports_passed_through():
     # Eagerly load pydantic's transitive deps so the workflow sandbox
@@ -29,6 +38,9 @@ with workflow.unsafe.imports_passed_through():
 
     from agents import Runner
 
+    from openai_agents.workflows.research_agents.deterministic_report import (
+        build_deterministic_report,
+    )
     from openai_agents.workflows.research_agents.orchestrator_agent import (
         FinalizeReportRequest,
         ProgressPlan,
@@ -78,6 +90,14 @@ class InteractiveResearchWorkflow:
         self.pending_elicitation: Elicitation | None = None
         self.completed_elicitations: list[Elicitation] = []
         self._elicitation_counter: int = 0
+        # Retained so the deterministic floor can assemble a report from real
+        # findings if the orchestrator fails or the budget fires. The agent
+        # receives these as tool results; the workflow keeps its own copy.
+        self.search_summaries: list[SearchSummary] = []
+        self.warehouse_summary: str | None = None
+        # Total seconds spent blocked on human elicitation responses, excluded
+        # from the wall-clock budget (we bound compute, not the human).
+        self._elicitation_wait_accum: float = 0.0
 
     # ------------------------------------------------------------------
     # Helpers used by orchestrator tools (called from agent context)
@@ -123,6 +143,7 @@ class InteractiveResearchWorkflow:
         self._elicitation_counter += 1
         self.pending_elicitation = Elicitation(id=el_id, message=message)
 
+        wait_start = workflow.now()
         await workflow.wait_condition(
             lambda: self.workflow_ended
             or (
@@ -130,6 +151,10 @@ class InteractiveResearchWorkflow:
                 and self.pending_elicitation.response is not None
             )
         )
+        # Human think-time doesn't count against the compute budget.
+        self._elicitation_wait_accum += (
+            workflow.now() - wait_start
+        ).total_seconds()
 
         if self.workflow_ended:
             raise ApplicationError("Workflow ended by user while awaiting elicitation")
@@ -176,7 +201,18 @@ class InteractiveResearchWorkflow:
         results = await asyncio.gather(
             *[_run_one(sq) for sq in subqueries], return_exceptions=False
         )
-        return [r for r in results if r is not None]
+        summaries = [r for r in results if r is not None]
+        # Retain for the deterministic floor (see __init__).
+        self.search_summaries = summaries
+        return summaries
+
+    def set_warehouse_summary(self, summary: str) -> None:
+        """Workflow-state tool helper: record the data-warehouse context.
+
+        Retained so the deterministic floor can cite real internal data if the
+        orchestrator later fails or the budget fires.
+        """
+        self.warehouse_summary = summary
 
     def set_image(self, image_path: str, description: str) -> None:
         """Workflow-state tool helper: record the generated research image."""
@@ -215,6 +251,12 @@ class InteractiveResearchWorkflow:
         The workflow is started with no input and immediately blocks waiting
         for the start_research update; the FastAPI backend sends that update
         with the user's query right after start_workflow.
+
+        Robustness contract: this method ALWAYS returns a valid report and
+        never raises. The orchestrator (with its layered model fallback) is
+        raced against a hard wall-clock budget; whichever way it goes —
+        success, model failure, or budget exhaustion — we return a report,
+        falling back to a deterministic, no-model assembly as the floor.
         """
         await workflow.wait_condition(
             lambda: self.workflow_ended or self.research_initialized
@@ -229,6 +271,39 @@ class InteractiveResearchWorkflow:
             "research_initialized was set without an original_query"
         )
 
+        # Race the orchestrator against the budget guard. We use a moving
+        # deadline (re-checked in the guard) rather than a single
+        # asyncio.wait_for timeout because the budget must exclude human
+        # elicitation wait time, which is only known as it accrues.
+        start = workflow.now()
+        orch_task = asyncio.ensure_future(self._synthesize_or_floor())
+        guard_task = asyncio.ensure_future(self._budget_guard(start))
+
+        await workflow.wait(
+            [orch_task, guard_task], return_when=asyncio.FIRST_COMPLETED
+        )
+
+        if orch_task.done():
+            # Orchestrator finished (with a real report or its own floor).
+            await self._cancel_and_drain(guard_task)
+            return orch_task.result()
+
+        # Budget fired first: abandon model work, return the deterministic floor.
+        workflow.logger.warning(
+            "Wall-clock budget of %ss exceeded; returning deterministic floor.",
+            TOTAL_BUDGET_SECONDS,
+        )
+        await self._cancel_and_drain(orch_task)
+        return self._deterministic_floor_result()
+
+    async def _synthesize_or_floor(self) -> InteractiveResearchResult:
+        """Run the orchestrator; on ANY failure, return the deterministic floor.
+
+        A failure here means every model layer (primary, cloud fallback, local)
+        was exhausted, or the agent produced output that didn't satisfy the
+        FinalizeReportRequest schema. Either way we degrade to a report built
+        from the research already captured in workflow state.
+        """
         orchestrator = new_orchestrator_agent()
         self.current_activity = "planning"
         try:
@@ -238,23 +313,65 @@ class InteractiveResearchWorkflow:
                 context=self,
                 max_turns=ORCHESTRATOR_MAX_TURNS,
             )
-        except Exception as e:
-            workflow.logger.exception(f"Orchestrator agent failed: {e}")
-            raise
 
-        if self.workflow_ended and not self.research_completed:
-            return self._build_result(
-                "Research ended by user", "Research workflow ended by user"
+            if self.workflow_ended and not self.research_completed:
+                return self._build_result(
+                    "Research ended by user", "Research workflow ended by user"
+                )
+
+            final = run_result.final_output_as(FinalizeReportRequest)
+            report = ReportData(
+                short_summary=final.short_summary,
+                markdown_report=final.markdown_report,
+                follow_up_questions=final.follow_up_questions,
             )
+            self.complete_research(report, final.image_path)
+            return self._build_result(
+                report.short_summary,
+                report.markdown_report,
+                report.follow_up_questions,
+                self.research_image_path,
+            )
+        except asyncio.CancelledError:
+            # Budget guard cancelled us; let run() handle the floor.
+            raise
+        except Exception as e:
+            workflow.logger.exception(
+                f"Orchestrator synthesis failed; using deterministic floor: {e}"
+            )
+            return self._deterministic_floor_result()
 
-        final = run_result.final_output_as(FinalizeReportRequest)
-        report = ReportData(
-            short_summary=final.short_summary,
-            markdown_report=final.markdown_report,
-            follow_up_questions=final.follow_up_questions,
+    async def _budget_guard(self, start) -> None:
+        """Return once the compute budget (excluding human wait) is spent."""
+        while True:
+            elapsed = (
+                workflow.now() - start
+            ).total_seconds() - self._elicitation_wait_accum
+            remaining = TOTAL_BUDGET_SECONDS - elapsed
+            if remaining <= 0:
+                return
+            # Re-check periodically so newly-accrued elicitation wait extends
+            # the effective deadline.
+            await workflow.sleep(min(remaining, BUDGET_RECHECK_SECONDS))
+
+    async def _cancel_and_drain(self, task: asyncio.Future) -> None:
+        """Cancel a task and swallow its terminal exception."""
+        task.cancel()
+        try:
+            await task
+        except BaseException:
+            pass
+
+    def _deterministic_floor_result(self) -> InteractiveResearchResult:
+        """Assemble a guaranteed report from captured state — never raises."""
+        report = build_deterministic_report(
+            original_query=self.original_query or "",
+            completed_elicitations=self.completed_elicitations,
+            search_summaries=self.search_summaries,
+            warehouse_summary=self.warehouse_summary,
+            image_description=self.research_image_description,
         )
-        self.complete_research(report, final.image_path)
-
+        self.complete_research(report, self.research_image_path or "")
         return self._build_result(
             report.short_summary,
             report.markdown_report,

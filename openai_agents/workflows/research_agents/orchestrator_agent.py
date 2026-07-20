@@ -217,11 +217,15 @@ async def query_data_warehouse(
             maximum_attempts=10,
         ),
     )
-    return (
+    summary_str = (
         f"Proprietary data warehouse context ({result.source}, "
         f"units={result.units_consumed}, "
         f"estimated_cost=${result.estimated_cost_usd:.2f}): {result.summary}"
     )
+    # Retain in workflow state so the deterministic floor can cite real
+    # internal data if the orchestrator later fails or the budget fires.
+    ctx.context.set_warehouse_summary(summary_str)
+    return summary_str
 
 
 @function_tool
