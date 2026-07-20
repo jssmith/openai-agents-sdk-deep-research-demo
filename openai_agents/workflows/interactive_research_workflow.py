@@ -332,11 +332,16 @@ class InteractiveResearchWorkflow:
             return self._deterministic_floor_result()
 
     async def _cancel_and_drain(self, task: asyncio.Future) -> None:
-        """Cancel a task and swallow its terminal exception."""
+        """Cancel a task and swallow its terminal exception.
+
+        Swallows CancelledError (expected) and any Exception the task surfaces
+        while unwinding, since run() must never raise; KeyboardInterrupt /
+        SystemExit are intentionally left to propagate.
+        """
         task.cancel()
         try:
             await task
-        except BaseException:
+        except (asyncio.CancelledError, Exception):
             pass
 
     def _deterministic_floor_result(self) -> InteractiveResearchResult:

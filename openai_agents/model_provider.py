@@ -103,19 +103,23 @@ class AttemptAwareOpenAIProvider(ModelProvider):
         self._fallback = OpenAIProvider(openai_client=fallback_client)
         self._fallback_model = fallback_model
 
-        # Local layer: its own client so the httpx read-timeout is the hard cap
-        # that stops a runaway local generation from hanging the activity.
-        # use_responses=False forces the Chat Completions API (Ollama does not
-        # implement the Responses API).
-        local_client = AsyncOpenAI(
-            base_url=local_base_url,
-            api_key=local_api_key,
-            max_retries=0,
-            timeout=local_http_timeout_seconds,
-        )
-        self._local = OpenAIProvider(openai_client=local_client, use_responses=False)
+        # Local layer, built only when enabled. Its own client so the httpx
+        # read-timeout is the hard cap that stops a runaway local generation
+        # from hanging the activity. use_responses=False forces the Chat
+        # Completions API (Ollama does not implement the Responses API).
+        self._local: OpenAIProvider | None = None
         self._local_model = local_model
         self._local_attempt = local_attempt
+        if local_model:
+            local_client = AsyncOpenAI(
+                base_url=local_base_url,
+                api_key=local_api_key,
+                max_retries=0,
+                timeout=local_http_timeout_seconds,
+            )
+            self._local = OpenAIProvider(
+                openai_client=local_client, use_responses=False
+            )
 
     def get_model(self, model_name: str | None) -> Model:
         try:
@@ -123,7 +127,7 @@ class AttemptAwareOpenAIProvider(ModelProvider):
         except RuntimeError:
             attempt = 1
 
-        if self._local_model and attempt >= self._local_attempt:
+        if self._local is not None and attempt >= self._local_attempt:
             logger.warning(
                 "Using LOCAL model=%s (Ollama, chat completions) for Temporal "
                 "activity attempt=%s (primary=%s)",
@@ -149,4 +153,5 @@ class AttemptAwareOpenAIProvider(ModelProvider):
     async def aclose(self) -> None:
         await self._primary.aclose()
         await self._fallback.aclose()
-        await self._local.aclose()
+        if self._local is not None:
+            await self._local.aclose()
