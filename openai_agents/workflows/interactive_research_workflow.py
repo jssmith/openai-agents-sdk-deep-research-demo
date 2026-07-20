@@ -20,15 +20,13 @@ from temporalio.exceptions import ApplicationError
 
 # Read at module-import time so the workflow body stays deterministic.
 ORCHESTRATOR_MAX_TURNS = int(os.getenv("ORCHESTRATOR_MAX_TURNS", "30"))
-# Hard wall-clock budget for the NON-INTERACTIVE portion of a run. If the
-# orchestrator (all model layers) hasn't produced a report within this many
-# seconds of active compute, the workflow abandons it and returns the
-# deterministic floor instead, so the demo always finishes in bounded time.
-# Elicitation waits for human input are excluded from this budget.
-TOTAL_BUDGET_SECONDS = int(os.getenv("DEMO_TOTAL_BUDGET_SECONDS", "300"))
-# How often the budget guard re-evaluates the (moving) deadline. Smaller = more
-# timer events; larger = coarser deadline granularity.
-BUDGET_RECHECK_SECONDS = int(os.getenv("DEMO_BUDGET_RECHECK_SECONDS", "5"))
+# Optional hard wall-clock cap on the whole run. DISABLED by default (0) so the
+# workflow history stays clean — the never-fail deterministic floor and the
+# per-model-call Temporal timeouts already bound the run. When set > 0, a single
+# timer races the orchestrator and, if it fires, we abandon model work and
+# return the deterministic floor. It's a single timer, not a polling loop, to
+# keep the Temporal UI uncluttered for the demo.
+TOTAL_BUDGET_SECONDS = int(os.getenv("DEMO_TOTAL_BUDGET_SECONDS", "0"))
 
 with workflow.unsafe.imports_passed_through():
     # Eagerly load pydantic's transitive deps so the workflow sandbox
@@ -95,9 +93,6 @@ class InteractiveResearchWorkflow:
         # receives these as tool results; the workflow keeps its own copy.
         self.search_summaries: list[SearchSummary] = []
         self.warehouse_summary: str | None = None
-        # Total seconds spent blocked on human elicitation responses, excluded
-        # from the wall-clock budget (we bound compute, not the human).
-        self._elicitation_wait_accum: float = 0.0
 
     # ------------------------------------------------------------------
     # Helpers used by orchestrator tools (called from agent context)
@@ -143,7 +138,6 @@ class InteractiveResearchWorkflow:
         self._elicitation_counter += 1
         self.pending_elicitation = Elicitation(id=el_id, message=message)
 
-        wait_start = workflow.now()
         await workflow.wait_condition(
             lambda: self.workflow_ended
             or (
@@ -151,10 +145,6 @@ class InteractiveResearchWorkflow:
                 and self.pending_elicitation.response is not None
             )
         )
-        # Human think-time doesn't count against the compute budget.
-        self._elicitation_wait_accum += (
-            workflow.now() - wait_start
-        ).total_seconds()
 
         if self.workflow_ended:
             raise ApplicationError("Workflow ended by user while awaiting elicitation")
@@ -253,10 +243,9 @@ class InteractiveResearchWorkflow:
         with the user's query right after start_workflow.
 
         Robustness contract: this method ALWAYS returns a valid report and
-        never raises. The orchestrator (with its layered model fallback) is
-        raced against a hard wall-clock budget; whichever way it goes —
-        success, model failure, or budget exhaustion — we return a report,
-        falling back to a deterministic, no-model assembly as the floor.
+        never raises. On any model failure the orchestrator degrades to a
+        deterministic, no-model floor. An optional single-timer wall-clock cap
+        (DEMO_TOTAL_BUDGET_SECONDS, off by default) can also force the floor.
         """
         await workflow.wait_condition(
             lambda: self.workflow_ended or self.research_initialized
@@ -271,24 +260,25 @@ class InteractiveResearchWorkflow:
             "research_initialized was set without an original_query"
         )
 
-        # Race the orchestrator against the budget guard. We use a moving
-        # deadline (re-checked in the guard) rather than a single
-        # asyncio.wait_for timeout because the budget must exclude human
-        # elicitation wait time, which is only known as it accrues.
-        start = workflow.now()
+        # Default path: no wall-clock cap, no extra timers — the original flow,
+        # bounded by the per-model-call Temporal timeouts and guaranteed to
+        # finish by the deterministic floor on failure.
+        if TOTAL_BUDGET_SECONDS <= 0:
+            return await self._synthesize_or_floor()
+
+        # Opt-in hard cap: a SINGLE timer races the orchestrator. If it fires,
+        # abandon model work and return the deterministic floor.
         orch_task = asyncio.ensure_future(self._synthesize_or_floor())
-        guard_task = asyncio.ensure_future(self._budget_guard(start))
+        budget_task = asyncio.ensure_future(workflow.sleep(TOTAL_BUDGET_SECONDS))
 
         await workflow.wait(
-            [orch_task, guard_task], return_when=asyncio.FIRST_COMPLETED
+            [orch_task, budget_task], return_when=asyncio.FIRST_COMPLETED
         )
 
         if orch_task.done():
-            # Orchestrator finished (with a real report or its own floor).
-            await self._cancel_and_drain(guard_task)
+            await self._cancel_and_drain(budget_task)
             return orch_task.result()
 
-        # Budget fired first: abandon model work, return the deterministic floor.
         workflow.logger.warning(
             "Wall-clock budget of %ss exceeded; returning deterministic floor.",
             TOTAL_BUDGET_SECONDS,
@@ -340,19 +330,6 @@ class InteractiveResearchWorkflow:
                 f"Orchestrator synthesis failed; using deterministic floor: {e}"
             )
             return self._deterministic_floor_result()
-
-    async def _budget_guard(self, start) -> None:
-        """Return once the compute budget (excluding human wait) is spent."""
-        while True:
-            elapsed = (
-                workflow.now() - start
-            ).total_seconds() - self._elicitation_wait_accum
-            remaining = TOTAL_BUDGET_SECONDS - elapsed
-            if remaining <= 0:
-                return
-            # Re-check periodically so newly-accrued elicitation wait extends
-            # the effective deadline.
-            await workflow.sleep(min(remaining, BUDGET_RECHECK_SECONDS))
 
     async def _cancel_and_drain(self, task: asyncio.Future) -> None:
         """Cancel a task and swallow its terminal exception."""

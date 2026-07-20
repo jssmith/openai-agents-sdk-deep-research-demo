@@ -22,7 +22,6 @@ def _clear_demo_env(monkeypatch):
         "DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS",
         "DEMO_MODEL_LOCAL_ATTEMPT",
         "DEMO_TOTAL_BUDGET_SECONDS",
-        "DEMO_BUDGET_RECHECK_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -45,20 +44,17 @@ def test_clean_profile_defaults(monkeypatch):
     assert settings.model_local_base_url == "http://localhost:11434/v1"
     assert settings.model_local_http_timeout_seconds == 90
     assert settings.model_local_attempt == 3
-    assert settings.total_budget_seconds == 300
-    assert settings.budget_recheck_seconds == 5
+    # Wall-clock cap disabled by default (keeps the Temporal history clean).
+    assert settings.total_budget_seconds == 0
 
 
-def test_timeout_invariants_hold_by_default(monkeypatch):
+def test_timeout_invariant_holds_by_default(monkeypatch):
     _clear_demo_env(monkeypatch)
 
     settings = load_demo_settings()
 
     # An abandoned HTTP request must not overlap its retry.
     assert settings.model_http_timeout_seconds < settings.model_start_to_close_seconds
-    # Model retries must finish inside the wall-clock budget, leaving room for
-    # the deterministic floor.
-    assert settings.model_schedule_to_close_seconds < settings.total_budget_seconds
 
 
 def test_recovery_profile_injects_two_warehouse_failures(monkeypatch):
@@ -89,14 +85,12 @@ def test_explicit_local_and_budget_overrides(monkeypatch):
     monkeypatch.setenv("DEMO_MODEL_LOCAL", "llama3.1:8b")
     monkeypatch.setenv("DEMO_MODEL_LOCAL_ATTEMPT", "2")
     monkeypatch.setenv("DEMO_TOTAL_BUDGET_SECONDS", "120")
-    monkeypatch.setenv("DEMO_BUDGET_RECHECK_SECONDS", "10")
 
     settings = load_demo_settings()
 
     assert settings.model_local == "llama3.1:8b"
     assert settings.model_local_attempt == 2
     assert settings.total_budget_seconds == 120
-    assert settings.budget_recheck_seconds == 10
 
 
 def test_local_layer_can_be_disabled(monkeypatch):

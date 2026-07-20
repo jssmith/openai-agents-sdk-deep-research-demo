@@ -193,10 +193,10 @@ async def test_budget_exceeded_returns_floor_without_exhausting_retries(monkeypa
     the retries are exhausted (proving the race + cancellation, not just the
     exception path).
     """
-    # Sandbox re-executes the workflow module at run time, so setting the env
-    # before the worker starts propagates these into the workflow globals.
+    # The wall-clock cap is opt-in (default 0). Enable it for this test. The
+    # sandbox re-executes the workflow module at run time, so setting the env
+    # before the worker starts propagates into the workflow globals.
     monkeypatch.setenv("DEMO_TOTAL_BUDGET_SECONDS", "20")
-    monkeypatch.setenv("DEMO_BUDGET_RECHECK_SECONDS", "5")
 
     provider = ChaosModelProvider(fault_all=True, fault_kind="timeout")
 

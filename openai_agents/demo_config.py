@@ -21,9 +21,9 @@ class DemoSettings:
     model_local_base_url: str
     model_local_http_timeout_seconds: int
     model_local_attempt: int
-    # Hard wall-clock budget for non-interactive work (excludes human wait).
+    # Optional hard wall-clock cap on the whole run (0 = disabled, the default;
+    # a single timer, not a polling loop, so the Temporal history stays clean).
     total_budget_seconds: int
-    budget_recheck_seconds: int
 
 
 def load_demo_settings() -> DemoSettings:
@@ -35,10 +35,10 @@ def load_demo_settings() -> DemoSettings:
 
     # Explicit environment variables always win over profile defaults. This lets
     # a presenter tighten one setting without creating another profile.
-    # Timeout invariants (see .env-sample): http_timeout < start_to_close so an
-    # abandoned request cannot overlap its retry; schedule_to_close <
-    # total_budget so model retries end inside the wall-clock budget, leaving
-    # room for the deterministic floor.
+    # Timeout invariant (see .env-sample): http_timeout < start_to_close so an
+    # abandoned request cannot overlap its retry. The optional total-budget cap
+    # is off by default (0); when enabled, keep it > schedule_to_close so model
+    # retries can finish inside the budget before the floor takes over.
     defaults = {
         "DEMO_DATA_WAREHOUSE_RETRY_FAILURES": "2" if profile == "recovery" else "0",
         "DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS": "1",
@@ -53,8 +53,7 @@ def load_demo_settings() -> DemoSettings:
         "DEMO_MODEL_LOCAL_BASE_URL": "http://localhost:11434/v1",
         "DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS": "90",
         "DEMO_MODEL_LOCAL_ATTEMPT": "3",
-        "DEMO_TOTAL_BUDGET_SECONDS": "300",
-        "DEMO_BUDGET_RECHECK_SECONDS": "5",
+        "DEMO_TOTAL_BUDGET_SECONDS": "0",
     }
     for name, value in defaults.items():
         os.environ.setdefault(name, value)
@@ -77,5 +76,4 @@ def load_demo_settings() -> DemoSettings:
         ),
         model_local_attempt=int(os.environ["DEMO_MODEL_LOCAL_ATTEMPT"]),
         total_budget_seconds=int(os.environ["DEMO_TOTAL_BUDGET_SECONDS"]),
-        budget_recheck_seconds=int(os.environ["DEMO_BUDGET_RECHECK_SECONDS"]),
     )
