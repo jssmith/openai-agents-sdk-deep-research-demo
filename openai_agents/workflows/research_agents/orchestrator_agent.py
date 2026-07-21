@@ -35,6 +35,10 @@ from openai_agents.workflows.research_agents.research_worker_agent import (
     SearchSummary,
 )
 
+# Read at import time so replaying a workflow uses the same activity policy even
+# if a replacement worker has different environment variables.
+IMAGE_MAX_ATTEMPTS = int(os.getenv("DEMO_IMAGE_MAX_ATTEMPTS", "1") or "1")
+
 # ctx.context is always an InteractiveResearchWorkflow at runtime, but we type
 # it as Any here to avoid a circular import (the workflow imports this module).
 
@@ -213,11 +217,15 @@ async def query_data_warehouse(
             maximum_attempts=10,
         ),
     )
-    return (
+    summary_str = (
         f"Proprietary data warehouse context ({result.source}, "
         f"units={result.units_consumed}, "
         f"estimated_cost=${result.estimated_cost_usd:.2f}): {result.summary}"
     )
+    # Retain in workflow state so the deterministic floor can cite real
+    # internal data if the orchestrator later fails or the budget fires.
+    ctx.context.set_warehouse_summary(summary_str)
+    return summary_str
 
 
 @function_tool
@@ -236,6 +244,7 @@ async def generate_research_image(
         generate_image,
         args=[image_prompt, None],
         start_to_close_timeout=timedelta(seconds=180),
+        retry_policy=RetryPolicy(maximum_attempts=IMAGE_MAX_ATTEMPTS),
     )
     if not result.success or not result.image_file_path:
         raise RuntimeError(

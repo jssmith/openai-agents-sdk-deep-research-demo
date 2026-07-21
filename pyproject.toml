@@ -7,11 +7,19 @@ requires-python = ">=3.10"
 readme = "README.md"
 license = "MIT"
 dependencies = [
-    "temporalio>=1.27.0,<2",
-    "openai-agents>=0.14.6,<0.16",
-    # temporalio 1.27.0's contrib.openai_agents transitively imports
+    # 1.28.0 is the first release with the agents payload-converter fix
+    # (PR #1563) that tolerates OpenAI response schema drift; 1.27.0 wedges
+    # workflows on a web_search_call that omits `action`.
+    "temporalio>=1.28.0,<2",
+    "openai-agents>=0.17.5,<0.19",
+    # openai-agents 0.18.0's Usage() default builds InputTokensDetails without
+    # cache_write_tokens, which openai 2.45.0 made a required field, so Usage()
+    # raises at runtime. Cap openai below 2.45 (the fix in openai-agents 0.18.1
+    # is still inside the 7-day cooldown). Lift the cap once >=0.18.1 is usable.
+    "openai>=2.36,<2.45",
+    # temporalio's contrib.openai_agents transitively imports
     # contrib.opentelemetry, so we need both extras together.
-    "temporalio[openai-agents,opentelemetry]>=1.27.0",
+    "temporalio[openai-agents,opentelemetry]>=1.28.0",
     "pydantic>=2.13.0,<3",
     "pillow>=11.0.0",
     "dotenv>=0.9.9",
@@ -37,13 +45,14 @@ dev = [
     "pytest-asyncio>=0.18.3,<0.19",
     "pyright>=1.1.394",
     "rich>=13.1.0, <14",
+    "ruff>=0.15,<0.16",
 ]
 
 [tool.uv]
 default-groups = ["dev"]
-# Override the global 7-day cooldown for temporalio — we want 1.27.0
-# (published 2026-04-30) for the agentic refactor work.
-exclude-newer-package = { temporalio = "2026-05-03" }
+# No temporalio cooldown override: it falls under the global 7-day cooldown
+# like every other package. (Previously pinned to pre-2026-05-03 / 1.27.0,
+# which had the agents payload-converter poison-pill bug fixed in 1.28.0.)
 
 [tool.isort]
 profile = "black"

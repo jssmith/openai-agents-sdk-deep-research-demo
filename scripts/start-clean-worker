@@ -23,15 +23,14 @@ env_file="${DEMO_ENV_FILE:-.env}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/replay-demos-ui-uv-cache}"
 export DEMO_WORKER_PID_FILE="${DEMO_WORKER_PID_FILE:-${default_pid_file}}"
-export DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES="${DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES:-40}"
-export DEMO_DATA_WAREHOUSE_RETRY_FAILURES="${DEMO_DATA_WAREHOUSE_RETRY_FAILURES:-0}"
-export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS="${DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS:-1}"
+export DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES="${DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES:-4}"
 ## DEMO_RESEARCH_IMAGE_PATH is read from .env (or the shell) by the worker
 ## activity itself. temp_images/ is gitignored, so on a fresh checkout either
 ## leave the var unset to use live image generation, or set it to a locally-
 ## cached jpeg.
 
 echo "Starting clean worker; pid file: ${DEMO_WORKER_PID_FILE}" >&2
+echo "  profile=${DEMO_PROFILE:-clean}" >&2
 echo "  concurrency=${DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES}" >&2
 
 if [[ -f "$env_file" ]]; then
