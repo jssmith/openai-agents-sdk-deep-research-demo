@@ -33,8 +33,9 @@ The inline code comments cross-link both ends of the contract.
 
 ## Worker-death-mid-flight recipe needs more work
 
-**Where**: `scripts/crash-worker`, `scripts/start-clean-worker [name]`,
-the orchestrator's parallel tool calls in
+**Where**: `scripts/crash-worker`, the worker launcher
+(`uv run --env-file .env openai_agents/run_worker.py`, with
+`DEMO_WORKER_PID_FILE` for extra instances), the orchestrator's parallel tool calls in
 `openai_agents/workflows/research_agents/orchestrator_agent.py`.
 
 **Symptom**: there is no documented turn-key way to demo "kill the
@@ -64,22 +65,24 @@ something that fails on stage.
   after partial work), trading literal-worker-death for a
   more reproducible reset.
 
-`scripts/crash-worker` and the multi-instance support in
-`scripts/start-clean-worker` are kept for ad-hoc experiments while
-this lands.
+`scripts/crash-worker` and the multi-instance support via
+`DEMO_WORKER_PID_FILE` on the worker launcher are kept for ad-hoc
+experiments while this lands.
 
 ## `RETRY_FAILURES` is capped at 9 by `max_attempts=10`
 
 **Where**: retry policy on `query_data_warehouse` in
-`orchestrator_agent.py`.
+`orchestrator_agent.py` (the `DATA_WAREHOUSE_MAX_ATTEMPTS` constant), which
+`demo_config.py` also validates against.
 
-**Symptom**: setting `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` to 10 or above
-exhausts retries and fails the workflow rather than recovering.
+**Symptom**: setting `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` to 10 or above is
+rejected at worker startup — that many failures would exhaust the retry
+budget instead of recovering.
 
 **Why it's like this**: `max_attempts=10` is a deliberate ceiling — the
 demo wants the failure-recovery beat to *recover*, not fail outright. If
-you want a longer beat, raise both `max_attempts` and the env value
-together; also widen `schedule_to_close_timeout` (currently 120s) since
+you want a longer beat, raise both `DATA_WAREHOUSE_MAX_ATTEMPTS` and the env
+value together; also widen `schedule_to_close_timeout` (currently 120s) since
 the total wall time grows linearly with attempts.
 
 ## OpenAI Agents SDK tracing is globally disabled

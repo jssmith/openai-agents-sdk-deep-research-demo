@@ -1,14 +1,24 @@
-"""Configuration for predictable live-demo timing and recovery behavior."""
+"""Configuration for predictable live-demo timing and recovery behavior.
+
+Settings come entirely from environment variables. This module is a *pure
+parser*: it reads the environment, applies code defaults, validates, and returns
+a frozen ``DemoSettings``. It never mutates ``os.environ`` — the precedence is
+simply ``shell export > .env (via --env-file) > code default``, with no
+alternate paths that could silently disagree with what the worker actually does.
+"""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
 
+from openai_agents.workflows.enterprise_data_activities import (
+    DATA_WAREHOUSE_MAX_ATTEMPTS,
+)
+
 
 @dataclass(frozen=True)
 class DemoSettings:
-    profile: str
     model_start_to_close_seconds: int
     model_schedule_to_close_seconds: int
     model_retry_delay_seconds: int
@@ -24,56 +34,102 @@ class DemoSettings:
     # Optional hard wall-clock cap on the whole run (0 = disabled, the default;
     # a single timer, not a polling loop, so the Temporal history stays clean).
     total_budget_seconds: int
+    # Data-warehouse failure injection: how many leading attempts fail before
+    # the lookup succeeds. 0 = clean. The loader validates this stays below
+    # DATA_WAREHOUSE_MAX_ATTEMPTS, so an injected-failure run always recovers
+    # (on attempt N+1) rather than exhausting the retry budget.
+    data_warehouse_retry_failures: int
+    data_warehouse_first_attempt_seconds: float
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+
+
+def _str_env(name: str, default: str) -> str:
+    # An explicitly empty value is meaningful (e.g. DEMO_MODEL_LOCAL="" disables
+    # the local layer), so only fall back to the default when the var is absent.
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip()
 
 
 def load_demo_settings() -> DemoSettings:
-    profile = os.getenv("DEMO_PROFILE", "clean").strip().lower()
-    if profile not in {"clean", "recovery"}:
+    # DEMO_PROFILE was removed in favor of driving failure injection directly
+    # with DEMO_DATA_WAREHOUSE_RETRY_FAILURES. Fail loudly rather than let a
+    # stale profile (in a shell or a checked-in .env) silently produce a clean
+    # run when the presenter asked for the recovery demo.
+    if "DEMO_PROFILE" in os.environ:
         raise ValueError(
-            f"DEMO_PROFILE must be 'clean' or 'recovery', got {profile!r}"
+            "DEMO_PROFILE was removed; set DEMO_DATA_WAREHOUSE_RETRY_FAILURES "
+            "directly (0 = clean, 8 = the ~38s recoverable-failure demo)."
         )
 
-    # Explicit environment variables always win over profile defaults. This lets
-    # a presenter tighten one setting without creating another profile.
-    # Timeout invariant (see .env-sample): http_timeout < start_to_close so an
-    # abandoned request cannot overlap its retry. The optional total-budget cap
-    # is off by default (0); when enabled, keep it > schedule_to_close so model
-    # retries can finish inside the budget before the floor takes over.
-    defaults = {
-        "DEMO_DATA_WAREHOUSE_RETRY_FAILURES": "2" if profile == "recovery" else "0",
-        "DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS": "1",
-        "DEMO_MODEL_START_TO_CLOSE_SECONDS": "100",
-        "DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS": "240",
-        "DEMO_MODEL_RETRY_DELAY_SECONDS": "3",
-        "DEMO_MODEL_MAX_ATTEMPTS": "3",
-        "DEMO_MODEL_HTTP_TIMEOUT_SECONDS": "90",
-        "ORCHESTRATOR_FALLBACK_MODEL": "gpt-5-mini",
-        "DEMO_IMAGE_MAX_ATTEMPTS": "1",
-        "DEMO_MODEL_LOCAL": "qwen2.5:14b-instruct",
-        "DEMO_MODEL_LOCAL_BASE_URL": "http://localhost:11434/v1",
-        "DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS": "90",
-        "DEMO_MODEL_LOCAL_ATTEMPT": "3",
-        "DEMO_TOTAL_BUDGET_SECONDS": "0",
-    }
-    for name, value in defaults.items():
-        os.environ.setdefault(name, value)
+    # Every allowed value must recover within the retry budget: the activity's
+    # RetryPolicy allows DATA_WAREHOUSE_MAX_ATTEMPTS attempts, so at most
+    # DATA_WAREHOUSE_MAX_ATTEMPTS - 1 leading failures still succeed (on the
+    # final attempt). Reject values that would exhaust the budget rather than
+    # relying on the never-fail floor to catch an exhausted lookup.
+    retry_failures = _int_env("DEMO_DATA_WAREHOUSE_RETRY_FAILURES", 0)
+    max_failures = DATA_WAREHOUSE_MAX_ATTEMPTS - 1
+    if not 0 <= retry_failures <= max_failures:
+        raise ValueError(
+            "DEMO_DATA_WAREHOUSE_RETRY_FAILURES must be between 0 and "
+            f"{max_failures} (it must recover within the "
+            f"{DATA_WAREHOUSE_MAX_ATTEMPTS}-attempt retry budget), got "
+            f"{retry_failures}"
+        )
 
-    return DemoSettings(
-        profile=profile,
-        model_start_to_close_seconds=int(os.environ["DEMO_MODEL_START_TO_CLOSE_SECONDS"]),
-        model_schedule_to_close_seconds=int(
-            os.environ["DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS"]
+    settings = DemoSettings(
+        model_start_to_close_seconds=_int_env("DEMO_MODEL_START_TO_CLOSE_SECONDS", 100),
+        model_schedule_to_close_seconds=_int_env(
+            "DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS", 240
         ),
-        model_retry_delay_seconds=int(os.environ["DEMO_MODEL_RETRY_DELAY_SECONDS"]),
-        model_max_attempts=int(os.environ["DEMO_MODEL_MAX_ATTEMPTS"]),
-        model_http_timeout_seconds=int(os.environ["DEMO_MODEL_HTTP_TIMEOUT_SECONDS"]),
-        model_fallback=os.environ["ORCHESTRATOR_FALLBACK_MODEL"].strip(),
-        image_max_attempts=int(os.environ["DEMO_IMAGE_MAX_ATTEMPTS"]),
-        model_local=os.environ["DEMO_MODEL_LOCAL"].strip(),
-        model_local_base_url=os.environ["DEMO_MODEL_LOCAL_BASE_URL"].strip(),
-        model_local_http_timeout_seconds=int(
-            os.environ["DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS"]
+        model_retry_delay_seconds=_int_env("DEMO_MODEL_RETRY_DELAY_SECONDS", 3),
+        model_max_attempts=_int_env("DEMO_MODEL_MAX_ATTEMPTS", 3),
+        model_http_timeout_seconds=_int_env("DEMO_MODEL_HTTP_TIMEOUT_SECONDS", 90),
+        model_fallback=_str_env("ORCHESTRATOR_FALLBACK_MODEL", "gpt-5-mini"),
+        image_max_attempts=_int_env("DEMO_IMAGE_MAX_ATTEMPTS", 1),
+        model_local=_str_env("DEMO_MODEL_LOCAL", "qwen2.5:14b-instruct"),
+        model_local_base_url=_str_env(
+            "DEMO_MODEL_LOCAL_BASE_URL", "http://localhost:11434/v1"
         ),
-        model_local_attempt=int(os.environ["DEMO_MODEL_LOCAL_ATTEMPT"]),
-        total_budget_seconds=int(os.environ["DEMO_TOTAL_BUDGET_SECONDS"]),
+        model_local_http_timeout_seconds=_int_env(
+            "DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS", 90
+        ),
+        model_local_attempt=_int_env("DEMO_MODEL_LOCAL_ATTEMPT", 3),
+        total_budget_seconds=_int_env("DEMO_TOTAL_BUDGET_SECONDS", 0),
+        data_warehouse_retry_failures=retry_failures,
+        data_warehouse_first_attempt_seconds=_float_env(
+            "DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS", 1.0
+        ),
     )
+
+    # Timeout invariant: an abandoned HTTP request must not overlap its retry.
+    if settings.model_http_timeout_seconds >= settings.model_start_to_close_seconds:
+        raise ValueError(
+            "DEMO_MODEL_HTTP_TIMEOUT_SECONDS "
+            f"({settings.model_http_timeout_seconds}) must be less than "
+            "DEMO_MODEL_START_TO_CLOSE_SECONDS "
+            f"({settings.model_start_to_close_seconds}) so an abandoned request "
+            "cannot overlap its retry."
+        )
+
+    return settings

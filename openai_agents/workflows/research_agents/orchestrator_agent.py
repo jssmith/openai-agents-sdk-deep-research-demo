@@ -23,6 +23,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 from openai_agents.workflows.enterprise_data_activities import (
+    DATA_WAREHOUSE_MAX_ATTEMPTS,
     DataWarehouseRequest,
     DataWarehouseResult,
     fetch_data_warehouse_context,
@@ -214,7 +215,7 @@ async def query_data_warehouse(
             initial_interval=timedelta(seconds=4),
             backoff_coefficient=1.0,
             maximum_interval=timedelta(seconds=4),
-            maximum_attempts=10,
+            maximum_attempts=DATA_WAREHOUSE_MAX_ATTEMPTS,
         ),
     )
     summary_str = (

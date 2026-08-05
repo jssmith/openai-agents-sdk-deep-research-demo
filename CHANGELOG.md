@@ -4,6 +4,34 @@ This file summarizes the diff between this fork and the upstream
 [steveandroulakis/openai-agents-demos](https://github.com/steveandroulakis/openai-agents-demos)
 snapshot it was forked from. Per-commit history is in `git log`.
 
+## Demo control surface
+
+- **`DEMO_PROFILE` removed.** The `clean` / `recovery` profiles are gone.
+  Failure injection is now driven directly by
+  `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` (an integer 0–9): `0` is a clean
+  run and `1`–`9` fail that many leading attempts and recover on the next.
+  The value is validated at startup against the lookup's shared
+  `DATA_WAREHOUSE_MAX_ATTEMPTS` (10) retry budget, so `10` or more is
+  rejected rather than exhausting retries. If `DEMO_PROFILE` is still set in
+  the environment, the worker fails fast at startup and points the user at
+  the new knob.
+- **`scripts/start-clean-worker` removed.** The worker is launched with a
+  plain command — `uv run --env-file .env openai_agents/run_worker.py` —
+  optionally prefixed with a shell export
+  (`DEMO_DATA_WAREHOUSE_RETRY_FAILURES=8 …`) for the recovery beat. A
+  shell export wins over `.env`, where the knob is commented out so the
+  default applies.
+- **Resolved-values startup banner.** The banner no longer prints
+  `profile=…`. It now prints the resolved settings the worker will
+  actually use, e.g. `warehouse_retry_failures=8 warehouse_outcome='recovers
+  on attempt 9' warehouse_max_attempts=10 model_max_attempts=3 …`, so docs
+  don't have to repeat numbers that can drift.
+- **PID file rename.** The worker writes `.demo-worker.pid` on startup
+  (was `.demo-worker-clean.pid`), and `scripts/crash-worker` targets it by
+  default. Extra instances set `DEMO_WORKER_PID_FILE`
+  (e.g. `.demo-worker-2.pid`) and are killed with `crash-worker 2`;
+  `scripts/stop-demo-workers` still tracks `.demo-worker*.pid`.
+
 ## Architectural changes
 
 - **Agentic refactor.** The original linear pipeline (Triage → Clarifying →
@@ -69,4 +97,6 @@ snapshot it was forked from. Per-commit history is in `git log`.
   current `temporalio.contrib.openai_agents`).
 - Dead `/api/stream` SSE endpoint removed; the UI uses inline polling.
 - Three `start-worker*` shell scripts that referenced unrelated paths
-  removed; `scripts/start-clean-worker` is the documented entry point.
+  removed. `scripts/start-clean-worker` was later removed too, in favor of
+  launching the worker directly with
+  `uv run --env-file .env openai_agents/run_worker.py`.

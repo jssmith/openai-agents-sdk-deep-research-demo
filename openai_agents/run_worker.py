@@ -20,6 +20,7 @@ from temporalio.worker import Worker
 from openai_agents.demo_config import load_demo_settings
 from openai_agents.model_provider import AttemptAwareOpenAIProvider
 from openai_agents.workflows.enterprise_data_activities import (
+    DATA_WAREHOUSE_MAX_ATTEMPTS,
     fetch_data_warehouse_context,
 )
 from openai_agents.workflows.image_generation_activity import generate_image
@@ -59,7 +60,8 @@ async def main():
 
     print(
         "Connecting to Temporal at "
-        f"{config.get('target_host')} in namespace {config.get('namespace')}"
+        f"{config.get('target_host')} in namespace {config.get('namespace')}",
+        flush=True,
     )
 
     client = await Client.connect(
@@ -99,16 +101,32 @@ async def main():
         ],
     )
 
+    # Validation guarantees failures < DATA_WAREHOUSE_MAX_ATTEMPTS, so every
+    # configured value recovers within the retry budget.
+    failures = demo_settings.data_warehouse_retry_failures
+    if failures == 0:
+        warehouse_outcome = "succeeds on attempt 1 (clean)"
+    else:
+        warehouse_outcome = f"recovers on attempt {failures + 1}"
+
+    # Print the *resolved* settings, never a mode name, so the banner can never
+    # advertise behavior the worker isn't actually configured for.
     print(
         "Starting worker..."
         f" max_concurrent_activities={max_concurrent_activities}"
-        f" profile={demo_settings.profile}"
+        f" warehouse_retry_failures={failures}"
+        f" warehouse_outcome={warehouse_outcome!r}"
+        f" warehouse_max_attempts={DATA_WAREHOUSE_MAX_ATTEMPTS}"
         f" model_timeout={demo_settings.model_start_to_close_seconds}s"
+        f" model_schedule_to_close={demo_settings.model_schedule_to_close_seconds}s"
+        f" model_retry_delay={demo_settings.model_retry_delay_seconds}s"
+        f" model_http_timeout={demo_settings.model_http_timeout_seconds}s"
         f" model_max_attempts={demo_settings.model_max_attempts}"
         f" fallback_model={demo_settings.model_fallback}"
         f" local_model={demo_settings.model_local or '(disabled)'}"
         f" local_attempt={demo_settings.model_local_attempt}"
-        f" total_budget={demo_settings.total_budget_seconds}s"
+        f" total_budget={demo_settings.total_budget_seconds}s",
+        flush=True,
     )
     worker = Worker(
         client,

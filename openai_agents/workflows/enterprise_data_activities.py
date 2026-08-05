@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+# The lookup's retry policy (see orchestrator_agent.py) allows this many
+# attempts. DEMO_DATA_WAREHOUSE_RETRY_FAILURES is validated in demo_config.py
+# to stay below this, so an injected-failure run always recovers on its final
+# attempt rather than exhausting the budget.
+DATA_WAREHOUSE_MAX_ATTEMPTS = 10
+
 
 @dataclass
 class DataWarehouseRequest:
@@ -33,9 +39,12 @@ async def fetch_data_warehouse_context(
 ) -> DataWarehouseResult:
     """Simulate a paid remote data warehouse lookup with a flaky connection."""
     attempt = activity.info().attempt
+    failures = _demo_retry_failures()
     activity.logger.info(
         "Running data warehouse lookup "
-        f"(attempt={attempt}, query_units=11, estimated_cost_usd=0.19)"
+        f"(attempt={attempt}/{DATA_WAREHOUSE_MAX_ATTEMPTS}, "
+        f"configured_failures={failures}, query_units=11, "
+        "estimated_cost_usd=0.19)"
     )
 
     if attempt == 1:
@@ -43,11 +52,12 @@ async def fetch_data_warehouse_context(
     else:
         await asyncio.sleep(0.6)
 
-    if attempt <= _demo_retry_failures():
+    if attempt <= failures:
         raise ApplicationError(
-            "Simulated remote connection reset while reading the data warehouse "
-            "response; Temporal retries the lookup without re-running completed "
-            "clarifications, search planning, or finished search calls."
+            f"Simulated remote connection reset on attempt {attempt} of "
+            f"{failures} configured failures; Temporal retries the lookup "
+            "without re-running completed clarifications, search planning, or "
+            "finished search calls."
         )
 
     return DataWarehouseResult(

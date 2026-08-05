@@ -7,11 +7,10 @@ cd "$repo_dir"
 
 pid_files=("$@")
 if [[ "${#pid_files[@]}" -eq 0 ]]; then
-  # Pick up any clean-worker instances spawned via `start-clean-worker [name]`
-  # (which writes .demo-worker-clean-<name>.pid) plus the legacy pid files.
-  pid_files=(.demo-worker-1.pid .demo-worker-2.pid .demo-worker.pid)
+  # Pick up the default worker pid file plus any extra instances launched with
+  # DEMO_WORKER_PID_FILE=.demo-worker-<name>.pid.
   shopt -s nullglob
-  pid_files+=(.demo-worker-clean*.pid)
+  pid_files=(.demo-worker.pid .demo-worker-*.pid)
   shopt -u nullglob
 fi
 

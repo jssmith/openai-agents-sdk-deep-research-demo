@@ -123,9 +123,7 @@ Three terminals:
 
 ```bash
 # Terminal 1: worker
-uv run openai_agents/run_worker.py
-#   or, with the demo-friendly defaults baked in:
-bash scripts/start-clean-worker
+uv run --env-file .env openai_agents/run_worker.py
 
 # Terminal 2: FastAPI backend + static frontend
 uv run ui/backend/main.py
@@ -140,33 +138,55 @@ Open <http://127.0.0.1:8234> in a browser, ask a research question, answer
 the two clarifying questions, and watch the workflow run through to a final
 markdown report. The Temporal UI shows the workflow history side-by-side.
 
-### Demo profiles
+### Failure injection
 
-The worker supports two presentation profiles through `DEMO_PROFILE`:
+Failure injection is driven directly by the `DEMO_DATA_WAREHOUSE_RETRY_FAILURES`
+env var (an integer 0–9) — there are no more `DEMO_PROFILE` presets. It
+controls how many leading attempts of the `DataWarehouseLookup` activity fail
+before it succeeds:
+
+- `0` (the default) — clean run, the lookup succeeds on attempt 1.
+- `N` (1 ≤ N ≤ 9) — the lookup fails its first N attempts and recovers on
+  attempt N+1. `8` is the canonical recoverable-failure beat (~38s
+  end-to-end, most of it 4-second retry backoffs, recovering on attempt 9);
+  `2` is a quicker variant that recovers on attempt 3.
+
+The lookup's retry policy allows 10 attempts, so `9` is the largest value that
+still recovers. The worker rejects `10` or more at startup (that would exhaust
+the budget instead of recovering).
+
+Set it with a shell export in front of the plain `uv` launch (a shell export
+always wins over `.env`, where the knob is commented out so the default
+applies):
 
 ```bash
-# Fast path: no injected warehouse failures
-DEMO_PROFILE=clean bash scripts/start-clean-worker
+# Clean run
+uv run --env-file .env openai_agents/run_worker.py
 
-# Recovery path: warehouse attempts 1-2 fail, attempt 3 succeeds
-DEMO_PROFILE=recovery bash scripts/start-clean-worker
+# Recovery beat: 8 failed attempts, recovers on attempt 9
+DEMO_DATA_WAREHOUSE_RETRY_FAILURES=8 uv run --env-file .env openai_agents/run_worker.py
 ```
 
-Both profiles bound model activities to a 35-second attempt, a 75-second
-schedule-to-close window, and two total attempts. A retry selects the faster
-`ORCHESTRATOR_FALLBACK_MODEL` (default `gpt-5-mini`). The underlying OpenAI
-HTTP timeout is 30 seconds, so a request is cancelled before Temporal starts
-the retry instead of continuing indefinitely in the background.
+The worker prints the *resolved* values it will actually use in its startup
+banner, e.g. `warehouse_retry_failures=8 warehouse_outcome='recovers on
+attempt 9' warehouse_max_attempts=10 model_max_attempts=3 …` — read the banner
+rather than trusting numbers repeated in docs, since the code defaults
+(model start-to-close, schedule-to-close, HTTP timeout, fallback model, and so
+on) can drift. If `DEMO_PROFILE` is still set in the environment the worker
+fails fast at startup and tells you to use `DEMO_DATA_WAREHOUSE_RETRY_FAILURES`
+instead.
 
-For the worker-recovery beat, wait until the first clarification is visible,
-run `bash scripts/crash-worker`, restart the worker with the same profile, and
-then submit the answer. The pending question remains in workflow state and the
-workflow accepts the update after the replacement worker polls the task queue.
+**Worker-death recovery beat.** Wait until the first clarification is visible,
+run `bash scripts/crash-worker`, restart the worker with the plain `uv`
+command, and then submit the answer. The pending question remains in workflow
+state and the workflow accepts the update after the replacement worker polls
+the task queue.
 
-For the later activity-retry beat, use the `recovery` profile and inspect the
-`DataWarehouseLookup` activity in the Temporal UI. The first two attempts fail
-with the simulated connection reset, and the third attempt succeeds without
-re-running completed clarifications or research calls.
+**Activity-retry recovery beat.** Launch the worker with
+`DEMO_DATA_WAREHOUSE_RETRY_FAILURES=8` (or `2` for the shorter version) and
+inspect the `DataWarehouseLookup` activity in the Temporal UI. The leading
+attempts fail with the simulated connection reset, and the recovery attempt
+succeeds without re-running completed clarifications or research calls.
 
 ![Chat UI on the left, Temporal workflow execution graph on the right, mid-run.](ui/public/images/demo.png)
 
@@ -186,12 +206,14 @@ and which failure-injection beats are enabled.
 The `scripts/` directory contains presentation helpers, not production
 patterns:
 
-- `start-clean-worker [name]` — start a worker with the recording-friendly
-  defaults baked in. Pass a name to run multiple instances in parallel
-  behind the same task queue.
-- `crash-worker [name]` — SIGKILL a named worker. Building block for
-  worker-death experiments; see [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for
-  why the worker-death recipe isn't documented as a turn-key beat yet.
+- `crash-worker [name]` — SIGKILL a worker. With no argument it targets
+  `.demo-worker.pid` (the file the worker writes on startup); pass a name
+  (e.g. `crash-worker 2`) to target `.demo-worker-<name>.pid`. Building
+  block for worker-death experiments; see
+  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for why the worker-death recipe isn't
+  documented as a turn-key beat yet. To run a second worker instance,
+  launch it with `DEMO_WORKER_PID_FILE=.demo-worker-2.pid uv run --env-file
+  .env openai_agents/run_worker.py`.
 - `stop-demo-workers` — graceful shutdown of all worker instances tracked
   by `.demo-worker*.pid`.
 - `check-ports` — quickly check who's listening on 7233 / 8233 / 8234.
@@ -234,12 +256,13 @@ DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
 DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
 ```
 
-…or `export` the values in the shell that starts the worker:
+…or `export` the values in the shell that starts the worker (a shell export
+always wins over `.env`):
 
 ```bash
 export DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
 export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
-bash scripts/start-clean-worker
+uv run --env-file .env openai_agents/run_worker.py
 ```
 
 What to highlight in the Temporal UI:
