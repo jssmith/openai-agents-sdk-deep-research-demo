@@ -1,11 +1,12 @@
 """
-FastAPI Backend for Temporal Research UI
-=========================================
-Production-ready backend connecting to Temporal workflows.
+FastAPI backend for the research demo UI.
+
+Serves the UI and generated images, and talks to the research workflow:
+starts it, delivers answers, reports status, and returns the result.
 
 Environment Variables:
 - TEMPORAL_PROFILE: name of the env config profile to use (optional).
-- TEMPORAL_ADDRESS: Temporal server address (default: 127.0.0.1:7233)
+- TEMPORAL_ADDRESS: Temporal server address (default: localhost:7233)
 - TEMPORAL_NAMESPACE: Temporal namespace (default: default)
 - TEMPORAL_API_KEY: API key for Temporal Cloud (disabled by default)
 - TEMPORAL_TASK_QUEUE: Task queue name (default: research-queue)
@@ -14,20 +15,23 @@ Environment Variables:
 import os
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from temporalio.client import Client, WorkflowExecutionStatus
-from temporalio.contrib.openai_agents._temporal_openai_agents import (
-    OpenAIPayloadConverter,
+from temporalio.client import (
+    Client,
+    WorkflowExecutionDescription,
+    WorkflowExecutionStatus,
+    WorkflowHandle,
 )
+from temporalio.contrib.openai_agents import OpenAIPayloadConverter
 from temporalio.converter import DataConverter
 from temporalio.envconfig import ClientConfig
+from temporalio.service import RPCError, RPCStatusCode
 
 from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchResult,
@@ -38,37 +42,15 @@ from openai_agents.workflows.research_agents.research_models import (
     UserQueryInput,
 )
 
-# Load environment variables
 load_dotenv()
 
 TEMPORAL_TASK_QUEUE = os.getenv("TEMPORAL_TASK_QUEUE", "research-queue")
+UI_DIR = Path(__file__).resolve().parent.parent
+IMAGES_DIR = UI_DIR.parent / "temp_images"
 
-
-# ============================================
-# FastAPI App Setup
-# ============================================
-app = FastAPI(
-    title="Temporal Research API",
-    description="Backend API for the Temporal Research Demo UI",
-    version="1.0.0",
-)
-
-# CORS middleware for frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Configure for your domain in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ============================================
-# Temporal Client Setup
-# ============================================
-
+app = FastAPI(title="Temporal Research API")
 
 temporal_client: Optional[Client] = None
-
 temporal_config = ClientConfig.load_client_connect_config()
 temporal_config.setdefault("target_host", "localhost:7233")
 temporal_config.setdefault("namespace", "default")
@@ -80,9 +62,9 @@ async def get_temporal_client() -> Client:
         return temporal_client
 
     print(
-        f"Connecting to Temporal at {temporal_config.get('target_host')} in namespace {temporal_config.get('namespace')}"
+        f"Connecting to Temporal at {temporal_config.get('target_host')} "
+        f"in namespace {temporal_config.get('namespace')}"
     )
-
     temporal_client = await Client.connect(
         **temporal_config,
         data_converter=DataConverter(payload_converter_class=OpenAIPayloadConverter),
@@ -90,9 +72,16 @@ async def get_temporal_client() -> Client:
     return temporal_client
 
 
-# ============================================
-# Request/Response Models
-# ============================================
+async def describe(handle: WorkflowHandle) -> WorkflowExecutionDescription:
+    """Describe the workflow, mapping an unknown workflow id to a 404."""
+    try:
+        return await handle.describe()
+    except RPCError as e:
+        if e.status == RPCStatusCode.NOT_FOUND:
+            raise HTTPException(status_code=404, detail="Workflow not found") from e
+        raise
+
+
 class StartResearchRequest(BaseModel):
     query: str
 
@@ -101,81 +90,40 @@ class AnswerRequest(BaseModel):
     answer: str
 
 
-class WorkflowStatusResponse(BaseModel):
-    workflow_id: str
-    status: str  # "pending", "awaiting_clarifications", "researching", "complete"
-    original_query: Optional[str] = None
-    current_question: Optional[str] = None
-    current_question_index: int = 0
-    total_questions: int = 0
-    clarification_responses: Dict[str, str] = {}
-
-
-class ResearchResultResponse(BaseModel):
-    workflow_id: str
-    markdown_report: str
-    short_summary: str
-    follow_up_questions: List[str]
-
-
 # ============================================
-# Static File Serving
+# UI and images
 # ============================================
 @app.get("/")
 async def serve_index():
-    """Serve the main chat interface"""
-    index_path = Path(__file__).parent.parent / "index.html"
-    if index_path.exists():
-        return HTMLResponse(content=index_path.read_text())
-    raise HTTPException(status_code=404, detail="Index page not found")
+    return FileResponse(UI_DIR / "index.html")
 
 
 @app.get("/success")
 async def serve_success():
-    """Serve the success/results page"""
-    success_path = Path(__file__).parent.parent / "success.html"
-    if success_path.exists():
-        return HTMLResponse(content=success_path.read_text())
-    raise HTTPException(status_code=404, detail="Success page not found")
+    return FileResponse(UI_DIR / "success.html")
 
 
-# Serve static assets (JS, CSS, fonts, images)
-static_path = Path(__file__).parent.parent
-if static_path.exists():
-    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+app.mount("/static", StaticFiles(directory=UI_DIR), name="static")
 
-images_path = Path(__file__).resolve().parent.parent.parent / "temp_images"
-images_path.mkdir(exist_ok=True)
-app.mount("/temp_images", StaticFiles(directory=str(images_path)), name="images")
+IMAGES_DIR.mkdir(exist_ok=True)
+app.mount("/temp_images", StaticFiles(directory=IMAGES_DIR), name="images")
+
 
 # ============================================
-# API Endpoints
+# API
 # ============================================
-
-
 @app.post("/api/start-research")
 async def start_research(request: StartResearchRequest):
-    """
-    Start a new research workflow.
-
-    Returns:
-        workflow_id: Unique identifier for tracking the workflow
-        status: Initial status ("started")
-    """
+    """Start a research workflow for the query and return its id."""
     client = await get_temporal_client()
     workflow_id = f"interactive-research-{uuid.uuid4().hex[:8]}"
-
     await client.start_workflow(
         InteractiveResearchWorkflow.run,
         UserQueryInput(query=request.query.strip()),
         id=workflow_id,
         task_queue=TEMPORAL_TASK_QUEUE,
     )
-
-    return {
-        "workflow_id": workflow_id,
-        "status": "started",
-    }
+    return {"workflow_id": workflow_id}
 
 
 _FAILED_RUN_STATUSES = {
@@ -188,27 +136,22 @@ _FAILED_RUN_STATUSES = {
 
 @app.get("/api/status/{workflow_id}")
 async def get_status(workflow_id: str):
-    """
-    Get current workflow status.
+    """Current conversation and progress, from the workflow's status query.
 
-    Returns:
-        workflow_id, status, original_query, current_activity, progress_plan,
-        pending_elicitation (or null), completed_elicitations.
+    A failed run is reported from the execution status alone, since querying
+    it would need a worker to replay a run that cannot make progress.
     """
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
-    desc = await handle.describe()
+    desc = await describe(handle)
+    if desc.status in _FAILED_RUN_STATUSES:
+        return {"workflow_id": workflow_id, "status": "failed"}
+
     status = await handle.query(InteractiveResearchWorkflow.get_status)
-
-    # The workflow's own status can't report that the run itself failed (e.g.
-    # every model attempt was exhausted); the execution status can.
-    run_failed = desc.status in _FAILED_RUN_STATUSES
-
     return {
         "workflow_id": workflow_id,
-        "status": "failed" if run_failed else status.status,
+        "status": status.status,
         "original_query": status.original_query,
-        "research_completed": status.research_completed,
         "current_activity": status.current_activity,
         "progress_plan": status.progress_plan,
         "pending_elicitation": (
@@ -229,7 +172,6 @@ async def submit_elicitation_response(
     """Deliver a response to the workflow's pending elicitation."""
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
-
     await handle.execute_update(
         InteractiveResearchWorkflow.submit_elicitation_response,
         ElicitationResponseInput(
@@ -237,60 +179,30 @@ async def submit_elicitation_response(
             response=request.answer.strip(),
         ),
     )
-
-    status = await handle.query(InteractiveResearchWorkflow.get_status)
-    return {
-        "status": "accepted",
-        "workflow_status": status.status,
-    }
+    return {"status": "accepted"}
 
 
 @app.get("/api/result/{workflow_id}")
-async def get_result(workflow_id: str):
-    """
-    Get final research result.
-
-    Returns:
-        workflow_id: Workflow identifier
-        markdown_report: Full markdown research report
-        short_summary: Brief summary of findings
-        follow_up_questions: Suggested follow-up questions
-    """
+async def get_result(workflow_id: str) -> InteractiveResearchResult:
+    """The final report of a completed run. Needs no running worker."""
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
-
-    # Check if workflow is complete
-    desc = await handle.describe()
-    if not desc.status or desc.status.name != "COMPLETED":
-        raise HTTPException(status_code=400, detail="Research not complete yet")
-
-    result: InteractiveResearchResult = await handle.result()
-
-    # return {
-    #     "workflow_id": workflow_id,
-    #     "markdown_report": result.markdown_report,
-    #     "short_summary": result.short_summary,
-    #     "follow_up_questions": result.follow_up_questions or [],
-    # }
-
-    return result
+    desc = await describe(handle)
+    if desc.status != WorkflowExecutionStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="Research not complete")
+    return await handle.result()
 
 
 @app.get("/api/health")
 async def health_check():
-    """Health check endpoint"""
     return {
         "status": "healthy",
-        # "temporal_profile": TEMPORAL_PROFILE,
         "temporal_address": temporal_config.get("target_host"),
         "temporal_namespace": temporal_config.get("namespace"),
         "task_queue": TEMPORAL_TASK_QUEUE,
     }
 
 
-# ============================================
-# Main Entry Point
-# ============================================
 if __name__ == "__main__":
     import uvicorn
 

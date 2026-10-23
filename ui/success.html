@@ -39,11 +39,9 @@
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/lib/marked.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked-gfm-heading-id@4.1.1/lib/index.umd.min.js"></script>
     <script src="static/src/js/api-client.js"></script>
+    <script src="static/src/js/report.js"></script>
     <script>
-        const API_BASE_URL = 'http://localhost:8234';
-        const client = new ResearchClient(API_BASE_URL);
         const markdownContent = document.getElementById('markdownContent');
         const reportImage = document.querySelector('.report-hero-image');
         const reportTitle = document.getElementById('reportTitle');
@@ -51,74 +49,25 @@
         const downloadBtn = document.getElementById('downloadReportBtn');
         const backLink = document.getElementById('reportBackLink');
 
-        marked.use(markedGfmHeadingId.gfmHeadingId());
-
-        function normalizeMarkdown(markdown = '') {
-            return markdown.replace(/~(?=\d)/g, 'approximately ');
-        }
-
-        function titleFromMarkdown(markdown = '') {
-            const heading = markdown.match(/^#\s+(.+)$/m);
-            return heading ? heading[1].trim() : 'Research report';
-        }
-
-        function downloadMarkdown(content, workflowId) {
-            const blob = new Blob([content], { type: 'text/markdown' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `research-report-${workflowId || 'result'}.md`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        }
-
         async function loadResearchResult() {
-            const params = new URLSearchParams(window.location.search);
-            const workflowIdFromUrl = params.get('wf');
-            const storedWorkflowId = sessionStorage.getItem('workflowId');
-            const storedResult = sessionStorage.getItem('researchResult');
-            let workflowId = workflowIdFromUrl || storedWorkflowId;
-            let resultJson = null;
-
-            if (storedResult && (!workflowIdFromUrl || storedWorkflowId === workflowIdFromUrl)) {
-                resultJson = storedResult;
+            const workflowId = new URLSearchParams(window.location.search).get('wf');
+            if (!workflowId) {
+                throw new Error('No workflow id in the URL');
             }
+            // The back link reopens the same conversation.
+            backLink.href = '/?wf=' + encodeURIComponent(workflowId);
 
-            if (!resultJson && workflowId) {
-                const result = await client.getResult(workflowId);
-                resultJson = JSON.stringify(result);
-                sessionStorage.setItem('researchResult', resultJson);
-                sessionStorage.setItem('workflowId', workflowId);
-            }
-
-            if (!resultJson) {
-                throw new Error('No report result found');
-            }
-
-            const result = JSON.parse(resultJson);
-            const markdown = result.markdown_report || '# Research report\n\nNo markdown report was returned.';
-
-            // Preserve the workflow ID on the back link so the conversation
-            // page can re-fetch the result instead of landing on an empty
-            // screen (localStorage is cleared on completion, so the URL is
-            // the only carrier).
-            if (workflowId && backLink) {
-                backLink.href = '/?wf=' + encodeURIComponent(workflowId);
-            }
-
-            reportTitle.textContent = titleFromMarkdown(markdown);
-            reportSummary.textContent = result.short_summary || 'The research report is ready to review.';
-            markdownContent.innerHTML = marked.parse(normalizeMarkdown(markdown));
-
+            const result = await researchApi.getResult(workflowId);
+            reportTitle.textContent = titleFromMarkdown(result.markdown_report);
+            reportSummary.textContent = result.short_summary;
+            markdownContent.innerHTML = renderMarkdown(result.markdown_report);
+            // Without a generated image the page keeps its placeholder image.
             if (result.image_file_path) {
                 reportImage.src = result.image_file_path;
             }
-
             downloadBtn.disabled = false;
             downloadBtn.addEventListener('click', () => {
-                downloadMarkdown(markdown, workflowId);
+                downloadMarkdown(result.markdown_report, workflowId);
             });
         }
 
@@ -127,7 +76,6 @@
             reportTitle.textContent = 'Report unavailable';
             reportSummary.textContent = 'Return to the conversation and open the report again after the research completes.';
             markdownContent.innerHTML = '<p>Report data was not available for this page.</p>';
-            downloadBtn.disabled = true;
         });
     </script>
 </body>
