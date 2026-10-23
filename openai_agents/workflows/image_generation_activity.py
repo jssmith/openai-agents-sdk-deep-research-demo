@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import datetime
 import os
@@ -68,7 +69,8 @@ async def generate_image(prompt: str) -> str:
     IMAGE_DIR.mkdir(exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     image_path = IMAGE_DIR / f"generated_image_{timestamp}.jpeg"
-    image_path.write_bytes(image_bytes)
+    # Off the event loop: async activities share it with the rest of the worker.
+    await asyncio.to_thread(image_path.write_bytes, image_bytes)
 
     activity.logger.info(
         f"Generated image: {len(image_bytes)} bytes, saved to {image_path}"

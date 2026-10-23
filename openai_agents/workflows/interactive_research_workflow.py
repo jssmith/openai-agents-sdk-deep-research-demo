@@ -250,17 +250,13 @@ class InteractiveResearchWorkflow:
                 max_turns=ORCHESTRATOR_MAX_TURNS,
             )
         except _AGENT_FAILURES as e:
-            # Non-retryable: retrying the workflow task would replay the same
-            # exhausted model calls. Fail the run so the UI reports it.
-            raise ApplicationError(
-                f"Research could not be completed: {e}", non_retryable=True
-            ) from e
+            # An ApplicationError fails the workflow execution (rather than
+            # the workflow task, which would retry), so the UI reports it.
+            raise ApplicationError(f"Research could not be completed: {e}") from e
 
         missing = self.missing_outcomes()
         if missing:
-            raise ApplicationError(
-                f"Agent finished without {', '.join(missing)}", non_retryable=True
-            )
+            raise ApplicationError(f"Agent finished without {', '.join(missing)}")
 
         final = run_result.final_output_as(FinalizeReportRequest)
         self.report_data = ReportData(
