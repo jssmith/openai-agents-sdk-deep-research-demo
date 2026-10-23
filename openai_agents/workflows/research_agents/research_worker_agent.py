@@ -2,12 +2,8 @@ import os
 
 from agents import Agent, WebSearchTool
 from agents.model_settings import ModelSettings
-from dotenv import load_dotenv
 from openai.types.shared.reasoning import Reasoning
 from pydantic import BaseModel, Field
-
-load_dotenv()
-
 
 INSTRUCTIONS = (
     "You are a focused research worker. You are given a single subquery and a brief "

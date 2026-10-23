@@ -48,8 +48,8 @@ set_tracing_disabled(True)
 async def main():
     logging.basicConfig(level=logging.INFO)
     demo_settings = load_demo_settings()
-    pid_file = Path(os.getenv("DEMO_WORKER_PID_FILE", ".demo-worker.pid"))
-    pid_file.write_text(str(os.getpid()))
+    # scripts/crash-worker reads this to find the process to kill.
+    Path(".demo-worker.pid").write_text(str(os.getpid()))
     max_concurrent_activities = int(
         os.getenv("DEMO_WORKER_MAX_CONCURRENT_ACTIVITIES", "4")
     )
@@ -111,7 +111,7 @@ async def main():
 
     # The cached image short-circuits live generation entirely; say so, since
     # otherwise every run silently shows the same picture.
-    cached_image = os.getenv("DEMO_RESEARCH_IMAGE_PATH", "").strip()
+    cached_image = demo_settings.research_image_path
     image_source = (
         f"CACHED {cached_image} (no live generation)" if cached_image else "live"
     )

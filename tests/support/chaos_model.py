@@ -14,7 +14,7 @@ from agents import Model, ModelProvider
 from agents.items import ModelResponse
 from temporalio import activity
 
-# A response function receives (system_instructions, tools) and returns a
+# A response function receives (system_instructions, input) and returns a
 # ModelResponse. It may raise to simulate a model failure on that specific call.
 ResponseFn = Callable[[Any, Any], ModelResponse]
 
@@ -43,9 +43,8 @@ class _RaisingModel(Model):
 class _CallableModel(Model):
     """A model that defers each response to a caller-supplied function."""
 
-    def __init__(self, fn: ResponseFn, counter: list[int]) -> None:
+    def __init__(self, fn: ResponseFn) -> None:
         self._fn = fn
-        self._counter = counter
 
     async def get_response(
         self,
@@ -58,8 +57,7 @@ class _CallableModel(Model):
         tracing: Any,
         **kwargs: Any,
     ) -> ModelResponse:
-        self._counter[0] += 1
-        return self._fn(system_instructions, tools)
+        return self._fn(system_instructions, input)
 
     def stream_response(self, *args: Any, **kwargs: Any):
         raise RuntimeError("chaos: streaming not supported in tests")
@@ -94,10 +92,6 @@ class ChaosModelProvider(ModelProvider):
         self._fault_all = fault_all
         self._fault_attempts = fault_attempts or set()
         self._fault_kind = fault_kind
-        # Number of times the response function was actually invoked. Lets a
-        # test assert the orchestrator was cancelled early (e.g. by the budget
-        # guard) rather than running every retry to exhaustion.
-        self.response_call_count: list[int] = [0]
 
     def get_model(self, model_name: str | None) -> Model:
         try:
@@ -110,4 +104,4 @@ class ChaosModelProvider(ModelProvider):
 
         if self._response_fn is None:
             raise RuntimeError("ChaosModelProvider: no response_fn for a live attempt")
-        return _CallableModel(self._response_fn, self.response_call_count)
+        return _CallableModel(self._response_fn)

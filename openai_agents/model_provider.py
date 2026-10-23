@@ -172,16 +172,11 @@ class AttemptAwareOpenAIProvider(ModelProvider):
         local_http_timeout_seconds: int = 90,
         local_attempt: int = 3,
     ) -> None:
-        primary_client = AsyncOpenAI(
-            max_retries=0,
-            timeout=http_timeout_seconds,
+        # One cloud client serves the primary and fallback models. Retries are
+        # Temporal's, so the client makes a single request per attempt.
+        self._cloud = OpenAIProvider(
+            openai_client=AsyncOpenAI(max_retries=0, timeout=http_timeout_seconds)
         )
-        fallback_client = AsyncOpenAI(
-            max_retries=0,
-            timeout=http_timeout_seconds,
-        )
-        self._primary = OpenAIProvider(openai_client=primary_client)
-        self._fallback = OpenAIProvider(openai_client=fallback_client)
         self._fallback_model = fallback_model
 
         # Local layer, built only when enabled. Its own client so the httpx
@@ -216,7 +211,7 @@ class AttemptAwareOpenAIProvider(ModelProvider):
         if attempt > 1:
             return self._cloud_retry_model(model_name, attempt)
 
-        return self._primary.get_model(model_name)
+        return self._cloud.get_model(model_name)
 
     def _cloud_retry_model(self, model_name: str | None, attempt: int) -> Model:
         """The cloud model for a retry: the faster fallback, if configured."""
@@ -228,11 +223,10 @@ class AttemptAwareOpenAIProvider(ModelProvider):
                 attempt,
                 model_name,
             )
-            return self._fallback.get_model(self._fallback_model)
-        return self._primary.get_model(model_name)
+            return self._cloud.get_model(self._fallback_model)
+        return self._cloud.get_model(model_name)
 
     async def aclose(self) -> None:
-        await self._primary.aclose()
-        await self._fallback.aclose()
+        await self._cloud.aclose()
         if self._local is not None:
             await self._local.aclose()

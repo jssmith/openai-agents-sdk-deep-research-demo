@@ -4,6 +4,10 @@ from typing import Dict, Optional
 
 from pydantic import BaseModel
 
+from openai_agents.workflows.research_agents.research_worker_agent import (
+    SearchSummary,
+)
+
 
 class ReportData(BaseModel):
     """Final report payload surfaced to the UI."""
@@ -39,13 +43,24 @@ class Elicitation(BaseModel):
     response: Optional[str] = None
 
 
+class ResearchResults(BaseModel):
+    """What run_parallel_research returns to the agent.
+
+    failed_queries lists subqueries whose research worker exhausted its model
+    retries; the agent should disclose the reduced coverage in its report.
+    """
+
+    findings: list[SearchSummary]
+    failed_queries: list[str]
+
+
 class ResearchInteractionDict(BaseModel):
     """Snapshot of workflow state surfaced to the UI through the get_status query."""
 
     original_query: str | None = None
 
-    # Status enum: pending | awaiting_user_input | researching | completed | ended
-    status: str = "pending"
+    # Status enum: awaiting_user_input | researching | completed
+    status: str = "researching"
 
     # Generic elicitation contract. The agent emits ONE elicitation at a time.
     pending_elicitation: Elicitation | None = None
@@ -53,12 +68,11 @@ class ResearchInteractionDict(BaseModel):
 
     research_completed: bool = False
 
-    # Coarse phase the orchestrator agent is currently in: planning |
-    # collecting | writing | None. Used by the UI to advance its progress
-    # timeline against real backend state.
+    # Coarse phase derived from recorded tool outcomes: planning | collecting
+    # | writing. Used by the UI to advance its progress timeline.
     current_activity: str | None = None
 
-    # Topic-specific progress labels the agent committed during its first
+    # Optional topic-specific progress labels the agent may supply on an
     # elicit_user call. Shape: {planning: {title, detail}, collecting: {...},
-    # writing: {...}}. None until the agent has issued the plan.
+    # writing: {...}}. None means the UI uses its own fixed labels.
     progress_plan: dict[str, Dict[str, str]] | None = None

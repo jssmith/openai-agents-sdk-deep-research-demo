@@ -2,7 +2,7 @@
 
 Agentic version: a single orchestrator agent runs inside the workflow and drives
 every stage (clarifications, parallel research sub-agents, data warehouse, image
-generation, report writing, finalization) via tool calls.
+generation, report writing) via tool calls.
 
 User input lands through a generic elicitation primitive: the agent calls
 elicit_user once per question, the workflow publishes a single pending
@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass
+from typing import Literal
 
 from temporalio import workflow
 from temporalio.exceptions import ActivityError, ApplicationError
@@ -41,6 +42,7 @@ with workflow.unsafe.imports_passed_through():
         ElicitationResponseInput,
         ReportData,
         ResearchInteractionDict,
+        ResearchResults,
         UserQueryInput,
     )
     from openai_agents.workflows.research_agents.research_worker_agent import (
@@ -48,13 +50,14 @@ with workflow.unsafe.imports_passed_through():
         new_research_worker_agent,
     )
 
-# Failures meaning the agent could not produce a report: every model attempt
+# Failures meaning an agent could not produce its output: every model attempt
 # (primary, cloud fallback, local) exhausted (ActivityError, possibly rewrapped
 # by the plugin as AgentsWorkflowError), or the agent run itself failed
-# (MaxTurnsExceeded, ModelBehaviorError, ...). These fail the workflow
-# visibly. Anything else is a bug and fails the workflow task so it can be
-# fixed and replayed.
-_SYNTHESIS_FAILURES = (ActivityError, AgentsException, AgentsWorkflowError)
+# (MaxTurnsExceeded, ModelBehaviorError, ...). Anything else is a bug and fails
+# the workflow task so it can be fixed and replayed.
+_AGENT_FAILURES = (ActivityError, AgentsException, AgentsWorkflowError)
+
+REQUIRED_ELICITATIONS = 2
 
 
 @dataclass
@@ -72,22 +75,23 @@ class InteractiveResearchWorkflow:
     def __init__(self) -> None:
         self.original_query: str | None = None
         self.report_data: ReportData | None = None
-        self.research_image_path: str | None = None
-        self.research_image_description: str | None = None
         self.research_completed: bool = False
-        self.workflow_ended: bool = False
-        self.research_initialized: bool = False
-        # Coarse phase the orchestrator is currently in. planning | collecting
-        # | writing | None. Surfaced to the UI via get_status.
-        self.current_activity: str | None = None
-        # Topic-specific progress labels the agent commits on its first
-        # elicit_user call. Falls back to hardcoded UI text if absent.
+        # Optional topic-specific progress labels from the agent; the UI
+        # falls back to fixed labels when absent.
         self.progress_plan: ProgressPlan | None = None
         # Generic elicitation contract: at most one pending request at a time;
         # answered ones move into completed_elicitations.
         self.pending_elicitation: Elicitation | None = None
         self.completed_elicitations: list[Elicitation] = []
         self._elicitation_counter: int = 0
+        # Outcomes recorded by the tools. These, not the model's final output,
+        # establish that the work happened.
+        self.research_started: bool = False
+        self.research_findings: list[SearchSummary] = []
+        self.research_failed_queries: list[str] = []
+        self.warehouse_result: str | None = None
+        self.image_outcome: Literal["generated", "unavailable"] | None = None
+        self.research_image_path: str | None = None
 
     # ------------------------------------------------------------------
     # Helpers used by orchestrator tools (called from agent context)
@@ -98,12 +102,7 @@ class InteractiveResearchWorkflow:
         message: str,
         progress_plan: ProgressPlan | None,
     ) -> str:
-        """Workflow-state tool: publish ONE elicitation and wait for the answer.
-
-        First call must include progress_plan (the agent's commitment to the
-        UI's progress timeline). Subsequent calls leave it None and reuse the
-        plan that was already stored.
-        """
+        """Workflow-state tool: publish ONE elicitation and wait for the answer."""
         # Guard against a model that emits multiple elicit_user tool calls in
         # one turn (the runtime supports parallel tool calls). Two concurrent
         # invocations would race on self.pending_elicitation and lose a
@@ -114,19 +113,12 @@ class InteractiveResearchWorkflow:
                 "before issuing another. Issue elicit_user calls sequentially, "
                 "not in parallel."
             )
-        # Upper bound: the contract is exactly two elicitations, mirroring the
-        # lower bound enforced in tool_run_parallel_research.
-        if len(self.completed_elicitations) >= 2:
+        if len(self.completed_elicitations) >= REQUIRED_ELICITATIONS:
             raise ApplicationError(
                 "elicit_user has already been called twice; the contract is "
                 "exactly two elicitations. Proceed to run_parallel_research."
             )
-
-        if self.progress_plan is None:
-            if progress_plan is None:
-                raise ApplicationError(
-                    "progress_plan is required on the first elicit_user call"
-                )
+        if progress_plan is not None:
             self.progress_plan = progress_plan
 
         el_id = f"el_{self._elicitation_counter}"
@@ -134,15 +126,9 @@ class InteractiveResearchWorkflow:
         self.pending_elicitation = Elicitation(id=el_id, message=message)
 
         await workflow.wait_condition(
-            lambda: self.workflow_ended
-            or (
-                self.pending_elicitation is not None
-                and self.pending_elicitation.response is not None
-            )
+            lambda: self.pending_elicitation is not None
+            and self.pending_elicitation.response is not None
         )
-
-        if self.workflow_ended:
-            raise ApplicationError("Workflow ended by user while awaiting elicitation")
 
         answered = self.pending_elicitation
         assert answered is not None and answered.response is not None
@@ -152,195 +138,161 @@ class InteractiveResearchWorkflow:
 
     async def tool_run_parallel_research(
         self, subqueries: list[str]
-    ) -> list[SearchSummary]:
-        """Workflow-state tool: fan out research worker sub-agents in parallel."""
-        if len(self.completed_elicitations) < 2:
+    ) -> ResearchResults:
+        """Workflow-state tool: fan out research worker sub-agents in parallel.
+
+        A worker whose model attempts are exhausted is reported back as a
+        failed query; the surviving findings still go to the agent.
+        """
+        if len(self.completed_elicitations) < REQUIRED_ELICITATIONS:
             raise ApplicationError(
                 "Must call elicit_user twice before run_parallel_research; "
                 f"only {len(self.completed_elicitations)} elicitation(s) completed so far"
             )
-        if not subqueries:
-            return []
-        self.current_activity = "collecting"
-
+        self.research_started = True
         worker = new_research_worker_agent()
 
         async def _run_one(q: str) -> SearchSummary | None:
             try:
-                input_str = f"Subquery: {q}"
-                result = await Runner.run(worker, input_str)
-                return result.final_output_as(SearchSummary)
-            except Exception as e:
-                # Known limitation: a failing subquery is logged and dropped,
-                # and the orchestrator only sees the surviving summaries. The
-                # finalize_report schema requires search_summaries with
-                # min_length=3, so 2 or more sibling failures will dead-end
-                # the agent in finalization with an opaque schema error
-                # rather than a useful message. Future work: surface a
-                # structured per-subquery failure to the agent so it can
-                # retry, or raise here and let the orchestrator's retry
-                # surface kick in.
-                workflow.logger.warning(f"Research worker failed for {q!r}: {e}")
+                result = await Runner.run(worker, f"Subquery: {q}")
+            except _AGENT_FAILURES:
+                workflow.logger.exception(f"Research worker failed for {q!r}")
                 return None
+            return result.final_output_as(SearchSummary)
 
-        results = await asyncio.gather(
-            *[_run_one(sq) for sq in subqueries], return_exceptions=False
+        outcomes = await asyncio.gather(*[_run_one(q) for q in subqueries])
+        results = ResearchResults(
+            findings=[o for o in outcomes if o is not None],
+            failed_queries=[q for q, o in zip(subqueries, outcomes) if o is None],
         )
-        return [r for r in results if r is not None]
+        self.research_findings.extend(results.findings)
+        self.research_failed_queries.extend(results.failed_queries)
+        return results
 
-    def set_image(self, image_path: str, description: str) -> None:
-        """Workflow-state tool helper: record the generated research image."""
-        self.research_image_path = image_path
-        self.research_image_description = description
+    def record_warehouse(self, summary: str) -> None:
+        """Workflow-state tool helper: record the warehouse lookup result."""
+        self.warehouse_result = summary
 
-    def complete_research(self, report: ReportData) -> None:
-        """Workflow-state tool helper: mark the workflow complete with the report.
+    def set_image(self, image_path: str) -> None:
+        """Workflow-state tool helper: record the generated research image.
 
-        The research image path is intentionally not passed in here: set_image
-        already recorded the ground-truth path returned by the image activity,
-        and that is the value surfaced to the UI. Finalization must not overwrite
-        it with a model-echoed filename (which could resolve to a stale or
-        missing file).
+        This path, returned by the image activity, is the only source of the
+        image shown in the UI; the model never supplies a filename.
         """
-        self.current_activity = "writing"
-        self.report_data = report
-        self.research_completed = True
+        self.image_outcome = "generated"
+        self.research_image_path = image_path
+
+    def set_image_unavailable(self) -> None:
+        """Workflow-state tool helper: image attempts were exhausted."""
+        self.image_outcome = "unavailable"
+        self.research_image_path = None
+
+    def missing_outcomes(self) -> list[str]:
+        """Required work with no recorded outcome; empty when the run is complete."""
+        missing = []
+        if len(self.completed_elicitations) < REQUIRED_ELICITATIONS:
+            missing.append("two answered clarifications")
+        if not self.research_findings:
+            missing.append("research findings")
+        if self.warehouse_result is None:
+            missing.append("a data warehouse result")
+        if self.image_outcome is None:
+            missing.append("an image outcome")
+        return missing
+
+    def current_activity(self) -> str:
+        """Coarse phase derived from recorded outcomes, for the UI."""
+        if not self.research_started:
+            return "planning"
+        if (
+            self.research_findings
+            and self.warehouse_result is not None
+            and self.image_outcome is not None
+        ):
+            return "writing"
+        return "collecting"
 
     # ------------------------------------------------------------------
-    # Result construction and main run loop
+    # Main run loop
     # ------------------------------------------------------------------
-
-    def _build_result(
-        self,
-        summary: str,
-        report: str,
-        questions: list[str] | None = None,
-        image_path: str | None = None,
-    ) -> InteractiveResearchResult:
-        return InteractiveResearchResult(
-            short_summary=summary,
-            markdown_report=report,
-            follow_up_questions=questions or [],
-            image_file_path=image_path,
-        )
 
     @workflow.run
-    async def run(self) -> InteractiveResearchResult:
-        """Long-running interactive workflow driven by the orchestrator agent.
-
-        The workflow is started with no input and immediately blocks waiting
-        for the start_research update; the FastAPI backend sends that update
-        with the user's query right after start_workflow.
+    async def run(self, input: UserQueryInput) -> InteractiveResearchResult:
+        """Run the orchestrator agent on the user's query.
 
         Robustness comes from time and fallbacks, never from faking success:
         each model call gets generous timeouts and falls back from the primary
         cloud model to a faster cloud model to a local model across Temporal
-        retries. If every layer fails, the workflow fails visibly.
+        retries. If every layer fails, or the agent finishes without doing the
+        required work, the workflow fails visibly.
         """
-        await workflow.wait_condition(
-            lambda: self.workflow_ended or self.research_initialized
-        )
-
-        if self.workflow_ended:
-            return self._build_result(
-                "Research ended by user", "Research workflow ended by user"
-            )
-
-        assert self.original_query is not None, (
-            "research_initialized was set without an original_query"
-        )
-
-        orchestrator = new_orchestrator_agent()
-        self.current_activity = "planning"
+        workflow.logger.info(f"Starting research for query: {input.query!r}")
+        self.original_query = input.query
         try:
             run_result = await Runner.run(
-                orchestrator,
-                self.original_query,
+                new_orchestrator_agent(),
+                input.query,
                 context=self,
                 max_turns=ORCHESTRATOR_MAX_TURNS,
             )
-        except _SYNTHESIS_FAILURES as e:
-            if self.workflow_ended:
-                return self._build_result(
-                    "Research ended by user", "Research workflow ended by user"
-                )
+        except _AGENT_FAILURES as e:
             # Non-retryable: retrying the workflow task would replay the same
             # exhausted model calls. Fail the run so the UI reports it.
             raise ApplicationError(
                 f"Research could not be completed: {e}", non_retryable=True
             ) from e
 
-        if self.workflow_ended and not self.research_completed:
-            return self._build_result(
-                "Research ended by user", "Research workflow ended by user"
+        missing = self.missing_outcomes()
+        if missing:
+            raise ApplicationError(
+                f"Agent finished without {', '.join(missing)}", non_retryable=True
             )
 
         final = run_result.final_output_as(FinalizeReportRequest)
-        report = ReportData(
+        self.report_data = ReportData(
             short_summary=final.short_summary,
             markdown_report=final.markdown_report,
             follow_up_questions=final.follow_up_questions,
         )
-        self.complete_research(report)
-        return self._build_result(
-            report.short_summary,
-            report.markdown_report,
-            report.follow_up_questions,
-            self.research_image_path,
+        self.research_completed = True
+        return InteractiveResearchResult(
+            short_summary=final.short_summary,
+            markdown_report=final.markdown_report,
+            follow_up_questions=final.follow_up_questions,
+            image_file_path=self.research_image_path,
         )
 
     # ------------------------------------------------------------------
-    # Queries / updates / signals
+    # Queries / updates
     # ------------------------------------------------------------------
 
     @workflow.query
     def get_status(self) -> ResearchInteractionDict:
-        if self.workflow_ended:
-            status = "ended"
-        elif self.research_completed:
+        if self.research_completed:
             status = "completed"
         elif self.pending_elicitation is not None:
             status = "awaiting_user_input"
-        elif self.original_query and not self.research_completed:
-            status = "researching"
         else:
-            status = "pending"
+            status = "researching"
 
-        plan_dict = (
-            self.progress_plan.model_dump() if self.progress_plan is not None else None
-        )
         return ResearchInteractionDict(
             original_query=self.original_query,
             status=status,
             pending_elicitation=self.pending_elicitation,
             completed_elicitations=list(self.completed_elicitations),
             research_completed=self.research_completed,
-            current_activity=self.current_activity,
-            progress_plan=plan_dict,
+            current_activity=self.current_activity(),
+            progress_plan=(
+                self.progress_plan.model_dump() if self.progress_plan else None
+            ),
         )
-
-    @workflow.update
-    async def start_research(self, input: UserQueryInput) -> ResearchInteractionDict:
-        """Start a new research session. Records the query and unblocks the run loop."""
-        workflow.logger.info(f"Starting research for query: '{input.query}'")
-        self.original_query = input.query
-        self.research_initialized = True
-        return self.get_status()
 
     @workflow.update
     async def submit_elicitation_response(
         self, input: ElicitationResponseInput
     ) -> ResearchInteractionDict:
         """Deliver a response to the currently pending elicitation."""
-        if self.pending_elicitation is None:
-            raise ValueError("No elicitation is currently pending")
-        if self.pending_elicitation.id != input.elicitation_id:
-            raise ValueError(
-                f"Pending elicitation id is {self.pending_elicitation.id!r}, "
-                f"got response for {input.elicitation_id!r}"
-            )
-        if not input.response.strip():
-            raise ValueError("Response cannot be empty")
+        assert self.pending_elicitation is not None
         # Setting .response unblocks tool_elicit_user via wait_condition.
         self.pending_elicitation.response = input.response
         return self.get_status()
@@ -357,7 +309,3 @@ class InteractiveResearchWorkflow:
             raise ValueError(
                 f"Stale elicitation id: pending is {self.pending_elicitation.id!r}"
             )
-
-    @workflow.signal
-    async def end_workflow_signal(self) -> None:
-        self.workflow_ended = True

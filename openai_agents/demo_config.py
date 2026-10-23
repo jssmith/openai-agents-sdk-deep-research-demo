@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from openai_agents.workflows.enterprise_data_activities import (
     DATA_WAREHOUSE_MAX_ATTEMPTS,
@@ -36,7 +37,9 @@ class DemoSettings:
     # DATA_WAREHOUSE_MAX_ATTEMPTS, so an injected-failure run always recovers
     # (on attempt N+1) rather than exhausting the retry budget.
     data_warehouse_retry_failures: int
-    data_warehouse_first_attempt_seconds: float
+    # Optional cached image returned instead of live generation (rehearsals).
+    # Empty means live generation.
+    research_image_path: str
 
 
 def _int_env(name: str, default: int) -> int:
@@ -49,16 +52,6 @@ def _int_env(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
 
 
-def _float_env(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a number, got {raw!r}") from exc
-
-
 def _str_env(name: str, default: str) -> str:
     # An explicitly empty value is meaningful (e.g. DEMO_MODEL_LOCAL="" disables
     # the local layer), so only fall back to the default when the var is absent.
@@ -69,16 +62,6 @@ def _str_env(name: str, default: str) -> str:
 
 
 def load_demo_settings() -> DemoSettings:
-    # DEMO_PROFILE was removed in favor of driving failure injection directly
-    # with DEMO_DATA_WAREHOUSE_RETRY_FAILURES. Fail loudly rather than let a
-    # stale profile (in a shell or a checked-in .env) silently produce a clean
-    # run when the presenter asked for the recovery demo.
-    if "DEMO_PROFILE" in os.environ:
-        raise ValueError(
-            "DEMO_PROFILE was removed; set DEMO_DATA_WAREHOUSE_RETRY_FAILURES "
-            "directly (0 = clean, 8 = the ~38s recoverable-failure demo)."
-        )
-
     # Every allowed value must recover within the retry budget: the activity's
     # RetryPolicy allows DATA_WAREHOUSE_MAX_ATTEMPTS attempts, so at most
     # DATA_WAREHOUSE_MAX_ATTEMPTS - 1 leading failures still succeed (on the
@@ -113,9 +96,7 @@ def load_demo_settings() -> DemoSettings:
         ),
         model_local_attempt=_int_env("DEMO_MODEL_LOCAL_ATTEMPT", 3),
         data_warehouse_retry_failures=retry_failures,
-        data_warehouse_first_attempt_seconds=_float_env(
-            "DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS", 1.0
-        ),
+        research_image_path=_str_env("DEMO_RESEARCH_IMAGE_PATH", ""),
     )
 
     # Timeout invariant: an abandoned HTTP request must not overlap its retry.
@@ -137,10 +118,26 @@ def load_demo_settings() -> DemoSettings:
             f"DEMO_IMAGE_MAX_ATTEMPTS must be >= 1, got {settings.image_max_attempts}"
         )
 
+    if settings.research_image_path:
+        _validate_research_image_path(settings.research_image_path)
+
     if settings.model_local:
         _validate_local_layer(settings)
 
     return settings
+
+
+def _validate_research_image_path(path: str) -> None:
+    """The cached image is served by the backend from temp_images/, so it must
+    be a relative path under that directory and the file must exist."""
+    p = Path(path)
+    if p.is_absolute() or p.parts[:1] != ("temp_images",) or ".." in p.parts:
+        raise ValueError(
+            "DEMO_RESEARCH_IMAGE_PATH must be a relative path under temp_images/, "
+            f"got {path!r}"
+        )
+    if not p.is_file():
+        raise ValueError(f"DEMO_RESEARCH_IMAGE_PATH does not exist: {path!r}")
 
 
 def _validate_local_layer(settings: DemoSettings) -> None:

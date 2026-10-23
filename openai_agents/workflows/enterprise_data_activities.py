@@ -11,6 +11,10 @@ from temporalio.exceptions import ApplicationError
 # attempt rather than exhausting the budget.
 DATA_WAREHOUSE_MAX_ATTEMPTS = 10
 
+# Each attempt takes this long, so a running attempt is visible in the
+# Temporal UI before it fails or succeeds.
+ATTEMPT_SECONDS = 1.0
+
 
 @dataclass
 class DataWarehouseRequest:
@@ -21,52 +25,39 @@ class DataWarehouseRequest:
 class DataWarehouseResult:
     source: str
     summary: str
-    units_consumed: int
-    estimated_cost_usd: float
-
-
-def _demo_retry_failures() -> int:
-    return int(os.getenv("DEMO_DATA_WAREHOUSE_RETRY_FAILURES", "0") or "0")
-
-
-def _first_attempt_delay_seconds() -> float:
-    return float(os.getenv("DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS", "1") or "1")
 
 
 @activity.defn(name="DataWarehouseLookup")
 async def fetch_data_warehouse_context(
     request: DataWarehouseRequest,
 ) -> DataWarehouseResult:
-    """Simulate a paid remote data warehouse lookup with a flaky connection."""
+    """Simulate a remote data warehouse lookup over a flaky connection.
+
+    The first DEMO_DATA_WAREHOUSE_RETRY_FAILURES attempts fail; Temporal
+    retries the activity until it succeeds. There is no real dataset, and the
+    result says so.
+    """
     attempt = activity.info().attempt
-    failures = _demo_retry_failures()
+    failures = int(os.getenv("DEMO_DATA_WAREHOUSE_RETRY_FAILURES", "0") or "0")
     activity.logger.info(
-        "Running data warehouse lookup "
-        f"(attempt={attempt}/{DATA_WAREHOUSE_MAX_ATTEMPTS}, "
-        f"configured_failures={failures}, query_units=11, "
-        "estimated_cost_usd=0.19)"
+        f"Running data warehouse lookup (attempt={attempt}/"
+        f"{DATA_WAREHOUSE_MAX_ATTEMPTS}, configured_failures={failures})"
     )
 
-    if attempt == 1:
-        await asyncio.sleep(_first_attempt_delay_seconds())
-    else:
-        await asyncio.sleep(0.6)
+    await asyncio.sleep(ATTEMPT_SECONDS)
 
     if attempt <= failures:
         raise ApplicationError(
             f"Simulated remote connection reset on attempt {attempt} of "
             f"{failures} configured failures; Temporal retries the lookup "
-            "without re-running completed clarifications, search planning, or "
-            "finished search calls."
+            "without re-running completed clarifications or research."
         )
 
     return DataWarehouseResult(
-        source="Data warehouse",
+        source="Simulated data warehouse",
         summary=(
-            "Internal market signals: the most interesting neighborhoods combine "
-            "distinctive local culture, active street life, accessible transit, "
-            "and durable visitor demand rather than relying on a single attraction."
+            f"Simulated internal data for {request.query!r}: this demo "
+            "environment has no proprietary dataset, so there are no internal "
+            "records to add."
         ),
-        units_consumed=11,
-        estimated_cost_usd=0.19,
     )

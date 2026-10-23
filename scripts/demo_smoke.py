@@ -1,7 +1,7 @@
 """End-to-end smoke driver for the interactive research demo.
 
 Drives InteractiveResearchWorkflow exactly the way the FastAPI backend does
-(start -> start_research update -> answer each pending elicitation -> await
+(start with the query -> answer each pending elicitation -> await
 result), records one JSON record per run to a JSONL file, and can then analyze
 the resulting Temporal histories.
 
@@ -78,7 +78,7 @@ async def _drive(handle: WorkflowHandle, deadline: float) -> tuple[int, str]:
     A single loop is essential: "researching" also appears in the gap between
     the first and second clarifying question (while the orchestrator is
     thinking), so we must NOT stop steering on it - we keep polling and answer
-    every elicitation until the workflow reports completed/ended.
+    every elicitation until the workflow reports completed.
 
     Returns (num_answered, last_status).
     """
@@ -87,7 +87,7 @@ async def _drive(handle: WorkflowHandle, deadline: float) -> tuple[int, str]:
     while time.monotonic() < deadline:
         status = await handle.query(InteractiveResearchWorkflow.get_status)
         last_status = _field(status, "status", "pending")
-        if last_status in ("completed", "ended"):
+        if last_status == "completed":
             break
         pending = _field(status, "pending_elicitation")
         if pending is not None:
@@ -117,12 +117,12 @@ async def run_once(results_path: str, query: str, timeout_s: float) -> dict[str,
     deadline = t0 + timeout_s
     try:
         handle = await client.start_workflow(
-            InteractiveResearchWorkflow.run, id=wf_id, task_queue=TASK_QUEUE
+            InteractiveResearchWorkflow.run,
+            UserQueryInput(query=query),
+            id=wf_id,
+            task_queue=TASK_QUEUE,
         )
         record["run_id"] = handle.first_execution_run_id
-        await handle.execute_update(
-            InteractiveResearchWorkflow.start_research, UserQueryInput(query=query)
-        )
         n_answered, _ = await _drive(handle, deadline)
         record["elicitations_answered"] = n_answered
 

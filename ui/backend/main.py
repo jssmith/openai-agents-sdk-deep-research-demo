@@ -165,15 +165,11 @@ async def start_research(request: StartResearchRequest):
     client = await get_temporal_client()
     workflow_id = f"interactive-research-{uuid.uuid4().hex[:8]}"
 
-    handle = await client.start_workflow(
+    await client.start_workflow(
         InteractiveResearchWorkflow.run,
+        UserQueryInput(query=request.query.strip()),
         id=workflow_id,
         task_queue=TEMPORAL_TASK_QUEUE,
-    )
-
-    await handle.execute_update(
-        InteractiveResearchWorkflow.start_research,
-        UserQueryInput(query=request.query.strip()),
     )
 
     return {

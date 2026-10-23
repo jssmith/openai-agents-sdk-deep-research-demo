@@ -27,10 +27,8 @@ class _FakeProvider:
 
 
 def _patch_providers(monkeypatch, attempt):
-    """Patch out the three OpenAIProviders (primary, fallback, local) + activity."""
-    providers = iter(
-        [_FakeProvider("primary"), _FakeProvider("fallback"), _FakeProvider("local")]
-    )
+    """Patch out the two OpenAIProviders (cloud, local) + activity."""
+    providers = iter([_FakeProvider("cloud"), _FakeProvider("local")])
     monkeypatch.setattr(model_provider, "AsyncOpenAI", lambda **_: object())
     monkeypatch.setattr(model_provider, "OpenAIProvider", lambda **_: next(providers))
     monkeypatch.setattr(
@@ -41,13 +39,13 @@ def _patch_providers(monkeypatch, attempt):
 def test_provider_uses_primary_model_on_first_attempt(monkeypatch):
     _patch_providers(monkeypatch, attempt=1)
     provider = AttemptAwareOpenAIProvider("gpt-5-mini", 30, local_model="qwen")
-    assert provider.get_model("gpt-5") == ("primary", "gpt-5")
+    assert provider.get_model("gpt-5") == ("cloud", "gpt-5")
 
 
 def test_provider_uses_fallback_model_on_retry(monkeypatch):
     _patch_providers(monkeypatch, attempt=2)
     provider = AttemptAwareOpenAIProvider("gpt-5-mini", 30, local_model="qwen")
-    assert provider.get_model("gpt-5") == ("fallback", "gpt-5-mini")
+    assert provider.get_model("gpt-5") == ("cloud", "gpt-5-mini")
 
 
 def test_provider_routes_to_local_on_third_attempt(monkeypatch):
@@ -140,14 +138,14 @@ def test_local_attempt_threshold_respected(monkeypatch):
     provider = AttemptAwareOpenAIProvider(
         "gpt-5-mini", 30, local_model="qwen", local_attempt=4
     )
-    assert provider.get_model("gpt-5") == ("fallback", "gpt-5-mini")
+    assert provider.get_model("gpt-5") == ("cloud", "gpt-5-mini")
 
 
 def test_empty_local_model_never_routes_local(monkeypatch):
     # Local disabled (local_model=""): high attempt still uses cloud fallback.
     _patch_providers(monkeypatch, attempt=9)
     provider = AttemptAwareOpenAIProvider("gpt-5-mini", 30, local_model="")
-    assert provider.get_model("gpt-5") == ("fallback", "gpt-5-mini")
+    assert provider.get_model("gpt-5") == ("cloud", "gpt-5-mini")
 
 
 def test_scrub_nulls_reasoning_and_verbosity_preserves_rest():

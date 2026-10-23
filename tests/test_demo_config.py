@@ -10,9 +10,8 @@ from openai_agents.workflows.enterprise_data_activities import (
 
 def _clear_demo_env(monkeypatch):
     for name in (
-        "DEMO_PROFILE",
         "DEMO_DATA_WAREHOUSE_RETRY_FAILURES",
-        "DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS",
+        "DEMO_RESEARCH_IMAGE_PATH",
         "DEMO_MODEL_START_TO_CLOSE_SECONDS",
         "DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS",
         "DEMO_MODEL_RETRY_DELAY_SECONDS",
@@ -47,7 +46,8 @@ def test_defaults(monkeypatch):
     assert settings.model_local_attempt == 3
     # Failure injection off by default (clean run).
     assert settings.data_warehouse_retry_failures == 0
-    assert settings.data_warehouse_first_attempt_seconds == 1.0
+    # Live image generation by default.
+    assert settings.research_image_path == ""
 
 
 def test_timeout_invariant_holds_by_default(monkeypatch):
@@ -77,12 +77,32 @@ def test_warehouse_retry_failures_parsed(monkeypatch):
     assert settings.data_warehouse_retry_failures == 8
 
 
-def test_stale_demo_profile_fails_fast(monkeypatch):
+def test_cached_image_path_accepted(monkeypatch, tmp_path):
     _clear_demo_env(monkeypatch)
-    monkeypatch.setenv("DEMO_PROFILE", "recovery")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "temp_images").mkdir()
+    (tmp_path / "temp_images" / "cached.jpeg").write_bytes(b"jpeg")
+    monkeypatch.setenv("DEMO_RESEARCH_IMAGE_PATH", "temp_images/cached.jpeg")
 
-    # A stale DEMO_PROFILE must not silently produce a clean run.
-    with pytest.raises(ValueError, match="DEMO_PROFILE was removed"):
+    assert load_demo_settings().research_image_path == "temp_images/cached.jpeg"
+
+
+@pytest.mark.parametrize(
+    ("value", "match"),
+    [
+        ("temp_images/missing.jpeg", "does not exist"),
+        ("elsewhere/cached.jpeg", "relative path under temp_images"),
+        ("/tmp/cached.jpeg", "relative path under temp_images"),
+        ("temp_images/../secret.jpeg", "relative path under temp_images"),
+    ],
+)
+def test_bad_cached_image_path_fails(monkeypatch, tmp_path, value, match):
+    _clear_demo_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    # A bad cache path must not silently fall back to live generation.
+    monkeypatch.setenv("DEMO_RESEARCH_IMAGE_PATH", value)
+
+    with pytest.raises(ValueError, match=match):
         load_demo_settings()
 
 

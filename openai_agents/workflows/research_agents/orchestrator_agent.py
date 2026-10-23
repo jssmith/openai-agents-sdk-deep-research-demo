@@ -4,14 +4,10 @@ The orchestrator runs inside the InteractiveResearchWorkflow via Runner.run and
 drives the entire research process through tool calls. Workflow state is exposed
 to tools through the run context, which is the workflow instance itself.
 
-Determinism is enforced *structurally*: required Pydantic-typed tool arguments
-mean the agent cannot reach finalize_report without having gathered every input
-(clarification answers, search summaries, warehouse summary, written report).
-No post-hoc validator is needed.
-
-The generated image is deliberately NOT a finalize field: its path is ground
-truth recorded by generate_research_image via wf.set_image, and the model must
-never be asked to echo a filename it doesn't own (see FinalizeReportRequest).
+Tools record what actually happened (answers, research findings, the warehouse
+result, the image outcome) in workflow state. The final output carries only the
+report the model wrote; the workflow checks the recorded outcomes before
+accepting it, so a model cannot claim work that never ran.
 """
 
 import os
@@ -25,21 +21,18 @@ from openai.types.shared.reasoning_effort import ReasoningEffort
 from pydantic import BaseModel, Field
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 from openai_agents.demo_config import load_demo_settings
+from openai_agents.model_provider import MEMORY_ANSWER_PREFIX
 from openai_agents.workflows.enterprise_data_activities import (
     DATA_WAREHOUSE_MAX_ATTEMPTS,
     DataWarehouseRequest,
     DataWarehouseResult,
     fetch_data_warehouse_context,
 )
-from openai_agents.workflows.image_generation_activity import (
-    ImageGenerationResult,
-    generate_image,
-)
-from openai_agents.workflows.research_agents.research_worker_agent import (
-    SearchSummary,
-)
+from openai_agents.workflows.image_generation_activity import generate_image
+from openai_agents.workflows.research_agents.research_models import ResearchResults
 
 # Read once at import. Retry options are not checked on replay, so workers with
 # different values don't cause nondeterminism; each worker simply schedules new
@@ -51,43 +44,42 @@ IMAGE_MAX_ATTEMPTS = load_demo_settings().image_max_attempts
 
 
 SYSTEM_PROMPT = (
-    "You are a research orchestrator. Given a user query, you direct the entire "
-    "research process by calling tools. You must call them in the following order, "
-    "and you cannot complete the task by skipping any step.\n"
+    "You are a research orchestrator. Given a user query, you direct the research "
+    "by calling tools, then write the final report.\n"
     "\n"
-    "1. elicit_user: ask the user clarifying questions to narrow their intent. You "
-    "MUST ask EXACTLY TWO questions, one at a time. Call elicit_user with question "
-    "1, wait for the answer, then call elicit_user again with question 2 informed by "
-    "the first answer. Two questions, no more, no fewer - the workflow will reject "
-    "run_parallel_research until both have been asked. On your FIRST elicit_user "
-    "call you MUST also commit a progress_plan: three short, topic-specific status "
-    "cards the UI will show through the run:\n"
+    "1. elicit_user: ask the user EXACTLY TWO clarifying questions, one at a time. "
+    "Ask question 1, wait for the answer, then ask question 2 informed by the first "
+    "answer. The workflow rejects run_parallel_research until both are answered. "
+    "On an elicit_user call you may also include a progress_plan: three short, "
+    "topic-specific status cards the UI shows during the run:\n"
     "   - planning: 'title' is a 4-7 word phrase about what we're about to research; "
-    "'detail' is one sentence about clarifying scope before kicking off agents.\n"
+    "'detail' is one sentence about clarifying scope.\n"
     "   - collecting: 'title' is a 4-7 word phrase about gathering evidence on the "
-    "topic; 'detail' is one sentence naming the angles being researched and that "
-    "internal data + a research visual are pulled in parallel.\n"
+    "topic; 'detail' is one sentence naming the angles being researched.\n"
     "   - writing: 'title' is a 4-7 word phrase about synthesizing the report; "
     "'detail' is one sentence describing the deliverable.\n"
-    "Be concrete to the topic; do not use generic placeholders. The progress_plan "
-    "argument is OPTIONAL on subsequent elicit_user calls and should be omitted there.\n"
     "\n"
-    "2. run_parallel_research: decompose the clarified query into 4-6 focused subqueries "
-    "and dispatch them in parallel. Each subquery must explore a distinct angle of the "
-    "topic. The tool returns a list of SearchSummary objects.\n"
+    "2. run_parallel_research: decompose the clarified query into 4-6 focused "
+    "subqueries, each exploring a distinct angle, and dispatch them in parallel. "
+    "It returns the findings plus any failed_queries whose research could not be "
+    "completed.\n"
     "\n"
-    "3. query_data_warehouse AND generate_research_image: issue these two tool calls "
-    "TOGETHER in the same turn so they execute in parallel - they are independent. "
-    "query_data_warehouse takes a concise query string. generate_research_image takes "
-    "a 2-sentence prompt focused on atmosphere and metaphor; never request text, "
-    "labels, charts, or numbers in the image.\n"
+    "3. query_data_warehouse and generate_research_image: both are required and "
+    "independent of each other, so you can call them in the same turn to run them "
+    "in parallel. query_data_warehouse takes a concise query string. "
+    "generate_research_image takes a 2-sentence prompt focused on atmosphere and "
+    "metaphor; never request text, labels, charts, or numbers in the image. If it "
+    "reports the image is unavailable, continue without it.\n"
     "\n"
-    "After all of these have run, you finish by emitting a structured "
-    "FinalizeReportRequest as your final response. This is the only valid way to "
-    "complete the task - the runtime parses your final response into that schema. "
-    "Include every field: the report you wrote, warehouse_summary, and "
-    "search_summaries. The system requires all of them. Do NOT include the image "
-    "path - the system already recorded it when generate_research_image ran.\n"
+    "When all of these have run, finish by emitting a FinalizeReportRequest as "
+    "your final response.\n"
+    "\n"
+    "Honesty requirements for the report:\n"
+    "- If failed_queries is non-empty, say briefly which angles could not be "
+    "researched.\n"
+    f"- If any finding begins with '{MEMORY_ANSWER_PREFIX}', say that live web "
+    "search was unavailable and those parts come from model knowledge.\n"
+    "- The data warehouse is a simulation; never present its output as evidence.\n"
     "\n"
     "Report style guidance for the final response:\n"
     "- markdown_report: tight, executive-ready markdown. 150-200 words MAX. Start with "
@@ -98,8 +90,8 @@ SYSTEM_PROMPT = (
     "- short_summary: 1-2 sentences capturing the headline findings.\n"
     "- follow_up_questions: 3 suggested topics to research further.\n"
     "\n"
-    "Be efficient. Do not call tools out of order or repeat them. Do not narrate to the "
-    "user between tool calls."
+    "Be efficient. Do not repeat tool calls. Do not narrate to the user between "
+    "tool calls."
 )
 
 
@@ -118,8 +110,7 @@ class ProgressLabel(BaseModel):
 class ProgressPlan(BaseModel):
     """Topic-specific labels for the three phases of the run.
 
-    The agent fills these in based on the user's query so the UI shows progress
-    text that matches the actual research, not a generic boilerplate.
+    Optional: the UI shows fixed labels for any phase the agent doesn't name.
     """
 
     planning: ProgressLabel
@@ -128,12 +119,7 @@ class ProgressPlan(BaseModel):
 
 
 class ElicitUserRequest(BaseModel):
-    """One question for the user.
-
-    progress_plan is REQUIRED on the first elicit_user call (the workflow
-    rejects subsequent calls until it's been committed) and should be omitted
-    on later ones.
-    """
+    """One question for the user, optionally with progress labels for the UI."""
 
     message: Annotated[str, Field(min_length=1, max_length=500)]
     progress_plan: ProgressPlan | None = None
@@ -146,30 +132,15 @@ class ParallelResearchRequest(BaseModel):
 
 
 class FinalizeReportRequest(BaseModel):
-    """Terminal payload. Every field is required - the type is the validator.
+    """The orchestrator's final output: the report it wrote.
 
-    The orchestrator produces the final report itself rather than handing findings
-    to a separate writer sub-agent. markdown_report, short_summary, and
-    follow_up_questions are the user-visible output; the rest are evidence the
-    report was actually grounded in the gathered findings.
+    Evidence of the work (answers, findings, warehouse result, image) is not
+    repeated here; the workflow checks what its tools recorded instead.
     """
 
     short_summary: Annotated[str, Field(min_length=1)]
     markdown_report: Annotated[str, Field(min_length=300)]
     follow_up_questions: Annotated[list[str], Field(min_length=2, max_length=5)]
-    # NOTE: no image_path field. The image path is ground truth recorded by
-    # generate_research_image via wf.set_image; asking the model to echo it here
-    # let a hand-copied filename overwrite the real path and surface a stale or
-    # broken image. Finalization reads self.research_image_path instead.
-    warehouse_summary: Annotated[str, Field(min_length=1)]
-    # min_length=3 means run_parallel_research must yield at least three
-    # SearchSummary objects. tool_run_parallel_research currently swallows
-    # individual subquery failures (see the comment in
-    # interactive_research_workflow.tool_run_parallel_research); if more than
-    # max(0, dispatched - 3) subqueries fail, finalization will trip this
-    # validator with an opaque schema error. See that function's TODO for the
-    # planned fix.
-    search_summaries: Annotated[list[SearchSummary], Field(min_length=3)]
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +156,7 @@ async def elicit_user(
     """Ask the user a single question and wait for their answer.
 
     Each call publishes ONE elicitation, the workflow blocks until the user
-    responds, and the response is returned as a string. Call again if you
-    need a follow-up question; call at most twice total. progress_plan must
-    be set on the first call.
+    responds, and the response is returned as a string. Call exactly twice.
     """
     wf = ctx.context
     return await wf.tool_elicit_user(request.message, request.progress_plan)
@@ -197,8 +166,8 @@ async def elicit_user(
 async def run_parallel_research(
     ctx: RunContextWrapper[Any],
     request: ParallelResearchRequest,
-) -> list[SearchSummary]:
-    """Dispatch 4-6 research worker sub-agents in parallel and gather their summaries."""
+) -> ResearchResults:
+    """Dispatch 4-6 research worker sub-agents in parallel and gather their findings."""
     wf = ctx.context
     return await wf.tool_run_parallel_research(request.subqueries)
 
@@ -208,18 +177,13 @@ async def query_data_warehouse(
     ctx: RunContextWrapper[Any],
     query: str,
 ) -> str:
-    """Look up proprietary internal context from the enterprise data warehouse.
-
-    Issue this in parallel with generate_research_image - they are independent
-    and the runtime will execute concurrent tool calls in the same turn together.
-    """
-    request = DataWarehouseRequest(query=query)
+    """Look up internal context from the (simulated) enterprise data warehouse."""
     result: DataWarehouseResult = await workflow.execute_activity(
         fetch_data_warehouse_context,
-        request,
+        DataWarehouseRequest(query=query),
         start_to_close_timeout=timedelta(seconds=15),
-        # Schedule_to_close caps total time across retries; sized for up to 8
-        # retries of ~0.6s + 4s gap = ~37s, plus success.
+        # Caps total time across retries: up to 9 failed attempts of ~1s plus
+        # 4s gaps is ~45s, plus the successful attempt.
         schedule_to_close_timeout=timedelta(seconds=120),
         retry_policy=RetryPolicy(
             initial_interval=timedelta(seconds=4),
@@ -228,11 +192,9 @@ async def query_data_warehouse(
             maximum_attempts=DATA_WAREHOUSE_MAX_ATTEMPTS,
         ),
     )
-    return (
-        f"Proprietary data warehouse context ({result.source}, "
-        f"units={result.units_consumed}, "
-        f"estimated_cost=${result.estimated_cost_usd:.2f}): {result.summary}"
-    )
+    summary = f"{result.source}: {result.summary}"
+    ctx.context.record_warehouse(summary)
+    return summary
 
 
 @function_tool
@@ -240,33 +202,34 @@ async def generate_research_image(
     ctx: RunContextWrapper[Any],
     image_prompt: str,
 ) -> str:
-    """Generate an evocative thematic image. Returns the saved image_path on success.
+    """Generate an evocative thematic image from a 2-sentence prompt.
 
-    The prompt should be 2 sentences focused on atmosphere/metaphor and must end with
-    "The image contains no text, numbers, or labels." Issue this in parallel with
-    query_data_warehouse - the runtime executes concurrent tool calls in one turn.
+    Returns the saved image path, or a note that the image is unavailable.
     """
     wf = ctx.context
-    result: ImageGenerationResult = await workflow.execute_activity(
-        generate_image,
-        args=[image_prompt, None],
-        start_to_close_timeout=timedelta(seconds=180),
-        retry_policy=RetryPolicy(maximum_attempts=IMAGE_MAX_ATTEMPTS),
-    )
-    if not result.success or not result.image_file_path:
-        raise RuntimeError(
-            f"Image generation failed: {result.error_message or 'no path returned'}"
+    try:
+        image_path: str = await workflow.execute_activity(
+            generate_image,
+            image_prompt,
+            start_to_close_timeout=timedelta(seconds=180),
+            retry_policy=RetryPolicy(maximum_attempts=IMAGE_MAX_ATTEMPTS),
         )
-    wf.set_image(result.image_file_path, image_prompt)
-    return result.image_file_path
+    except ActivityError:
+        # Attempts exhausted: the report goes ahead with the UI's missing-image
+        # placeholder rather than waiting on, or faking, an image.
+        workflow.logger.exception("Image generation failed; continuing without it")
+        wf.set_image_unavailable()
+        return "The image is unavailable. Continue without it."
+    wf.set_image(image_path)
+    return image_path
 
 
 # Note: there is intentionally no finalize_report tool. The orchestrator's
 # terminal action is to emit a FinalizeReportRequest as its structured final
 # response (output_type below). With a tool, gpt-5 sometimes serialized the
-# large argument payload as a text message instead of as a function call,
-# which left research_completed=False; using output_type makes the structured
-# response *be* the natural way to finish.
+# large argument payload as a text message instead of as a function call;
+# using output_type makes the structured response *be* the natural way to
+# finish.
 
 
 # ---------------------------------------------------------------------------
