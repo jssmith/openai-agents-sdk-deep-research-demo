@@ -229,6 +229,9 @@ patterns:
 
 ## Development
 
+[AGENTS.md](AGENTS.md) has the working rules for this repo, for coding agents
+and people alike.
+
 ```bash
 # Tests (time-skipping Temporal test server; the worker-restart test starts a
 # local dev server)
