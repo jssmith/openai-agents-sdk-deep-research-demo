@@ -1,5 +1,5 @@
 // Report rendering and download, shared by the conversation and report pages.
-// Requires marked (loaded from the CDN before this script).
+// Requires marked (vendored in public/vendor, so it loads without internet).
 
 function escapeHTML(value = '') {
     return String(value)
@@ -10,12 +10,26 @@ function escapeHTML(value = '') {
         .replace(/'/g, '&#039;');
 }
 
-// The report is model-generated: render its markdown, but show any raw HTML
-// in it as text rather than letting it into the page.
+// Link and image targets the report may use. Anything else (javascript:,
+// data:, ...) could run code in this page.
+function isSafeUrl(href = '') {
+    return /^(https?:|mailto:|#|\/(?!\/))/i.test(href.trim())
+        || /^temp_images\//.test(href.trim());
+}
+
+// The report is model-generated, and marked does not sanitize: show raw HTML
+// as text, and render links and images with unsafe targets as plain text.
+// Returning false falls back to marked's own renderer.
 marked.use({
     renderer: {
         html(token) {
             return escapeHTML(token.text);
+        },
+        link(token) {
+            return isSafeUrl(token.href) ? false : this.parser.parseInline(token.tokens);
+        },
+        image(token) {
+            return isSafeUrl(token.href) ? false : escapeHTML(token.text);
         },
     },
 });

@@ -27,7 +27,6 @@ with workflow.unsafe.imports_passed_through():
     # captures them in its initial-import set; otherwise they're imported
     # on first model instantiation and the sandbox emits a warning.
     import annotated_types  # noqa: F401
-
     from agents import Runner
     from agents.exceptions import AgentsException
     from temporalio.contrib.openai_agents import AgentsWorkflowError
@@ -53,8 +52,8 @@ with workflow.unsafe.imports_passed_through():
 # Failures meaning an agent could not produce its output: every model attempt
 # (primary, cloud fallback, local) exhausted (ActivityError, possibly rewrapped
 # by the plugin as AgentsWorkflowError), or the agent run itself failed
-# (MaxTurnsExceeded, ModelBehaviorError, ...). Anything else is a bug and fails
-# the workflow task so it can be fixed and replayed.
+# (MaxTurnsExceeded, ModelBehaviorError, or a tool error the model cannot
+# correct, which the SDK wraps as UserError).
 _AGENT_FAILURES = (ActivityError, AgentsException, AgentsWorkflowError)
 
 REQUIRED_ELICITATIONS = 2
@@ -200,6 +199,21 @@ class InteractiveResearchWorkflow:
             missing.append("an image outcome")
         return missing
 
+    def coverage_note(self) -> str:
+        """Markdown disclosing research angles that failed, from recorded state.
+
+        The workflow adds this itself so the reader learns about reduced
+        coverage whether or not the agent's report mentions it.
+        """
+        if not self.research_failed_queries:
+            return ""
+        total = len(self.research_findings) + len(self.research_failed_queries)
+        failed = "; ".join(self.research_failed_queries)
+        return (
+            f"\n\n---\n\n*Coverage note: {len(self.research_failed_queries)} of "
+            f"{total} research angles could not be completed: {failed}.*\n"
+        )
+
     def current_activity(self) -> str:
         """Coarse phase derived from recorded outcomes, for the UI."""
         if not self.research_started:
@@ -251,14 +265,14 @@ class InteractiveResearchWorkflow:
         final = run_result.final_output_as(FinalizeReportRequest)
         self.report_data = ReportData(
             short_summary=final.short_summary,
-            markdown_report=final.markdown_report,
+            markdown_report=final.markdown_report + self.coverage_note(),
             follow_up_questions=final.follow_up_questions,
         )
         self.research_completed = True
         return InteractiveResearchResult(
-            short_summary=final.short_summary,
-            markdown_report=final.markdown_report,
-            follow_up_questions=final.follow_up_questions,
+            short_summary=self.report_data.short_summary,
+            markdown_report=self.report_data.markdown_report,
+            follow_up_questions=self.report_data.follow_up_questions,
             image_file_path=self.research_image_path,
         )
 

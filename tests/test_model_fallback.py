@@ -118,10 +118,12 @@ async def test_partial_research_completes_and_reports_failed_queries():
     result = await run_research(ChaosModelProvider(response_fn=script))
 
     _assert_valid_report(result)
-    # The agent was told which angle could not be researched.
+    # The agent was told which angle could not be researched...
     assert script.research_tool_output is not None
     assert failing in script.research_tool_output
-    assert "failed_queries" in script.research_tool_output
+    # ...and the reader is told too, whatever the agent's report says.
+    assert f"Coverage note: 1 of {len(SUBQUERIES)}" in result.markdown_report
+    assert failing in result.markdown_report
 
 
 @pytest.mark.asyncio

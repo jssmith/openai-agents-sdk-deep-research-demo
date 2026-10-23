@@ -17,6 +17,18 @@ on the model following instructions; nothing enforces the label in code.
 **Check**: `uv run python scripts/validate_local_model.py` with Ollama up
 shows whether the configured model follows it.
 
+## Workflow code changes don't carry over running workflows
+
+**Symptom**: after changing the workflow's code (for example its run
+signature or its update handlers), runs started under the old code can't
+continue, or be reloaded in the UI, on a worker running the new code.
+
+**Why it's like this**: the demo uses no workflow versioning; every run is
+short-lived and disposable.
+
+**What to do**: after upgrading, start new runs. For anything long-lived, use
+[Temporal workflow versioning](https://docs.temporal.io/develop/python/workflows/versioning).
+
 ## `RETRY_FAILURES` is capped at 9 by `max_attempts=10`
 
 **Where**: retry policy on `query_data_warehouse` in

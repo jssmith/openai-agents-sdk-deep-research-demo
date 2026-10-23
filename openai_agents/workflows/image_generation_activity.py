@@ -3,12 +3,7 @@ import datetime
 import os
 from pathlib import Path
 
-from openai import (
-    AsyncOpenAI,
-    AuthenticationError,
-    BadRequestError,
-    PermissionDeniedError,
-)
+from openai import APIStatusError, AsyncOpenAI
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
@@ -54,9 +49,12 @@ async def generate_image(prompt: str) -> str:
                 output_format="jpeg",
                 output_compression=65,
             )
-    except (BadRequestError, AuthenticationError, PermissionDeniedError) as e:
-        # Retrying a rejected request (bad parameters, auth, unverified org)
-        # cannot succeed.
+    except APIStatusError as e:
+        # A rejected request (bad parameters, auth, unknown model, unverified
+        # org) cannot succeed on retry. Same policy as the model activities:
+        # 4xx is permanent except timeout, conflict and rate limit.
+        if not 400 <= e.status_code < 500 or e.status_code in (408, 409, 429):
+            raise
         raise ApplicationError(
             f"Image request rejected: {e}",
             non_retryable=True,

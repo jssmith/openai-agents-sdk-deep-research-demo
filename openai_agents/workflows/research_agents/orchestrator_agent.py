@@ -14,14 +14,15 @@ import os
 from datetime import timedelta
 from typing import Annotated, Any, Literal, cast
 
-from agents import Agent, RunContextWrapper, function_tool
+from agents import Agent, RunContextWrapper, default_tool_error_function, function_tool
+from agents.exceptions import ModelBehaviorError
 from agents.model_settings import ModelSettings
 from openai.types.shared.reasoning import Reasoning
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from pydantic import BaseModel, Field
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError
+from temporalio.exceptions import ActivityError, ApplicationError
 
 from openai_agents.demo_config import load_demo_settings
 from openai_agents.model_provider import MEMORY_ANSWER_PREFIX
@@ -75,8 +76,6 @@ SYSTEM_PROMPT = (
     "your final response.\n"
     "\n"
     "Honesty requirements for the report:\n"
-    "- If failed_queries is non-empty, say briefly which angles could not be "
-    "researched.\n"
     f"- If any finding begins with '{MEMORY_ANSWER_PREFIX}', say that live web "
     "search was unavailable and those parts come from model knowledge.\n"
     "- The data warehouse is a simulation; never present its output as evidence.\n"
@@ -148,7 +147,23 @@ class FinalizeReportRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@function_tool
+def _model_correctable_errors(ctx: RunContextWrapper[Any], error: Exception) -> str | None:
+    """Tool failure policy: tell the model only about errors it can correct.
+
+    Invalid arguments (ModelBehaviorError) and the workflow's deliberate
+    contract errors (ApplicationError, e.g. "ask both questions first") go
+    back to the model. Anything else is a failure the model cannot fix, so it
+    propagates and fails the run visibly.
+    """
+    if isinstance(error, (ApplicationError, ModelBehaviorError)):
+        return default_tool_error_function(ctx, error)
+    return None
+
+
+tool = function_tool(failure_error_function=_model_correctable_errors)
+
+
+@tool
 async def elicit_user(
     ctx: RunContextWrapper[Any],
     request: ElicitUserRequest,
@@ -162,7 +177,7 @@ async def elicit_user(
     return await wf.tool_elicit_user(request.message, request.progress_plan)
 
 
-@function_tool
+@tool
 async def run_parallel_research(
     ctx: RunContextWrapper[Any],
     request: ParallelResearchRequest,
@@ -172,7 +187,7 @@ async def run_parallel_research(
     return await wf.tool_run_parallel_research(request.subqueries)
 
 
-@function_tool
+@tool
 async def query_data_warehouse(
     ctx: RunContextWrapper[Any],
     query: str,
@@ -197,7 +212,7 @@ async def query_data_warehouse(
     return summary
 
 
-@function_tool
+@tool
 async def generate_research_image(
     ctx: RunContextWrapper[Any],
     image_prompt: str,

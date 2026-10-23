@@ -6,11 +6,15 @@ complete, which phase the UI shows, and which image the report uses.
 
 from __future__ import annotations
 
+from agents.exceptions import ModelBehaviorError
+from temporalio.exceptions import ApplicationError
+
 from openai_agents.workflows.interactive_research_workflow import (
     InteractiveResearchWorkflow,
 )
 from openai_agents.workflows.research_agents.orchestrator_agent import (
     FinalizeReportRequest,
+    _model_correctable_errors,
 )
 from openai_agents.workflows.research_agents.research_models import Elicitation
 from openai_agents.workflows.research_agents.research_worker_agent import (
@@ -74,6 +78,25 @@ def test_failed_research_alone_is_not_findings():
     wf.research_failed_queries = ["q"]
 
     assert "research findings" in wf.missing_outcomes()
+
+
+def test_coverage_note_discloses_failed_research_angles():
+    wf = InteractiveResearchWorkflow()
+    _researched(wf)
+    assert wf.coverage_note() == ""
+
+    wf.research_failed_queries = ["regulation"]
+
+    note = wf.coverage_note()
+    assert "1 of 2 research angles" in note
+    assert "regulation" in note
+
+
+def test_only_model_correctable_tool_errors_reach_the_model():
+    """Bad arguments and contract errors go back to the model; bugs fail the run."""
+    assert _model_correctable_errors(None, ApplicationError("ask first"))
+    assert _model_correctable_errors(None, ModelBehaviorError("bad JSON"))
+    assert _model_correctable_errors(None, RuntimeError("bug")) is None
 
 
 def test_finalize_report_request_carries_only_the_report():

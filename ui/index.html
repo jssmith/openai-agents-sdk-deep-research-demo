@@ -68,7 +68,7 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/lib/marked.umd.min.js"></script>
+    <script src="static/public/vendor/marked-15.0.7.min.js"></script>
     <script src="static/src/js/api-client.js"></script>
     <script src="static/src/js/report.js"></script>
     <script>
@@ -208,7 +208,9 @@
 
         function addReportCard(result) {
             if (reportRendered) return;
-            reportRendered = true;
+            // Render first: if it throws, nothing is shown yet and the next
+            // poll tries again.
+            const reportHTML = renderMarkdown(result.markdown_report);
 
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message bot report-message';
@@ -247,7 +249,7 @@
             `;
 
             const panel = card.querySelector('.report-panel');
-            card.querySelector('.markdown-content').innerHTML = renderMarkdown(result.markdown_report);
+            card.querySelector('.markdown-content').innerHTML = reportHTML;
 
             function toggleReport() {
                 const isOpen = !panel.hidden;
@@ -283,9 +285,11 @@
                 downloadMarkdown(result.markdown_report, runId);
             });
 
+            addMessage('I finished the research. The report is ready to review.');
             messageDiv.appendChild(card);
             chatContainer.appendChild(messageDiv);
             chatContainer.scrollTop = chatContainer.scrollHeight;
+            reportRendered = true;
         }
 
         function setResearchComplete(complete) {
@@ -371,7 +375,6 @@
                 showSpinner(false);
                 showPhasesThrough('writing');
                 setAgentStatus('Report ready', true);
-                addMessage('I finished the research. The report is ready to review.');
                 addReportCard(result);
                 setResearchComplete(true);
             } else {
