@@ -119,7 +119,32 @@ calling the image API.
 
 ## Running the demo
 
-Three terminals:
+One command starts everything in a tmux session:
+
+```bash
+scripts/start-demo                          # clean run
+scripts/start-demo --warehouse-failures 8   # with the ~38s recovery beat
+scripts/stop-demo                           # stop it all
+```
+
+It checks the configuration first (the same validation the worker runs, plus
+the OpenAI key) and refuses to start if anything is wrong. Then it opens one
+tmux window per process:
+
+| Window | What runs there |
+|---|---|
+| `temporal` | `temporal server start-dev`, only if no server answers at the configured address. An existing server is reused and left running by `stop-demo`. |
+| `ollama` | `ollama serve`, only if the local fallback model is enabled and Ollama isn't running. It warns if the model isn't pulled. |
+| `worker` | The worker, in a loop. After `scripts/crash-worker`, press Enter in this window to restart it. |
+| `backend` | FastAPI backend and chat UI on <http://127.0.0.1:8234>. |
+| `shell` | A shell in the repo for the helper scripts. |
+
+Windows stay open after their process exits, so errors stay visible. Run with
+`--restart` to replace a running session, or `--no-attach` to leave it in the
+background (`tmux attach -t research-demo`). The dev server this script
+starts is in-memory, so its workflow history is lost when the session stops.
+
+To run the pieces by hand instead, use three terminals:
 
 ```bash
 # Terminal 1: worker
@@ -205,6 +230,9 @@ and which failure-injection beats are enabled.
 
 The `scripts/` directory contains presentation helpers, not production
 patterns:
+
+- `start-demo` / `stop-demo` — launch and stop the whole stack in tmux (see
+  "Running the demo").
 
 - `crash-worker [name]` — SIGKILL a worker. With no argument it targets
   `.demo-worker.pid` (the file the worker writes on startup); pass a name

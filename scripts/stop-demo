@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Stop everything scripts/start-demo launched by killing its tmux session. A
+# Temporal server that was already running before start-demo is not in the
+# session and keeps running.
+
+session="${1:-research-demo}"
+
+if ! tmux has-session -t "=$session" 2>/dev/null; then
+  echo "No tmux session '$session' is running."
+  exit 0
+fi
+
+echo "Stopping tmux session '$session': $(tmux list-windows -t "=$session" -F '#W' | tr '\n' ' ')"
+tmux kill-session -t "=$session"

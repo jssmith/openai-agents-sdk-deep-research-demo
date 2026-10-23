@@ -34,6 +34,17 @@ DEMO_RESEARCH_IMAGE_PATH='temp_images/generated_image_20260505_091349_451235.jpe
 
 ## 1. Bring up the stack (3 things)
 
+One command does all of it in tmux, reusing a Temporal server already on :7233:
+
+```bash
+scripts/start-demo                          # or --warehouse-failures 8 for the recovery beat
+```
+
+After `scripts/crash-worker`, press Enter in the `worker` window to restart the worker.
+`scripts/stop-demo` stops everything (an existing Temporal server keeps running).
+
+Or by hand:
+
 ```bash
 # Temporal dev server — reuse an existing one if it's already on :7233.
 temporal server start-dev                 # UI at http://localhost:8233

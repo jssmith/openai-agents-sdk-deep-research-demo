@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Launch the whole demo in one tmux session:
+#
+#   temporal  Temporal dev server (only if none is reachable at the configured
+#             address; an existing server is reused and left alone)
+#   ollama    `ollama serve` (only if the local fallback model is enabled and
+#             Ollama isn't already running)
+#   worker    the Temporal worker, in a loop: after it exits (e.g. killed by
+#             scripts/crash-worker) press Enter to restart it
+#   backend   FastAPI backend + chat UI on http://127.0.0.1:8234
+#   shell     a shell in the repo for crash-worker, show-history, etc.
+#
+# Configuration comes from .env (and your shell environment, which wins), the
+# same way the worker and backend read it. Everything is validated before any
+# window starts. Stop it all with scripts/stop-demo.
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/start-demo [options]
+
+Options:
+  --warehouse-failures N  fail the first N data-warehouse attempts (0-9);
+                          8 is the ~38s recovery beat
+  --restart               kill an existing demo session first
+  --no-attach             start everything but don't attach to tmux
+  --session NAME          tmux session name (default: research-demo)
+  -h, --help              show this help
+EOF
+}
+
+session="research-demo"
+restart=0
+attach=1
+warehouse_failures=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --warehouse-failures)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      warehouse_failures="$2"
+      shift 2
+      ;;
+    --restart) restart=1; shift ;;
+    --no-attach) attach=0; shift ;;
+    --session)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      session="$2"
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd -- "$script_dir/.." && pwd)"
+cd "$repo_dir"
+
+backend_port=8234
+
+info() { printf '==> %s\n' "$*"; }
+warn() { printf 'WARNING: %s\n' "$*" >&2; }
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+port_listener() {
+  lsof -iTCP:"$1" -sTCP:LISTEN -n -P 2>/dev/null | tail -n +2 || true
+}
+
+# --- Prerequisites ---------------------------------------------------------
+
+for tool in tmux uv curl lsof; do
+  command -v "$tool" >/dev/null 2>&1 || die "'$tool' is not installed"
+done
+[[ -f .env ]] || die ".env not found; copy .env-sample to .env and fill it in"
+
+if tmux has-session -t "=$session" 2>/dev/null; then
+  if [[ "$restart" -eq 1 ]]; then
+    info "Stopping existing tmux session '$session'"
+    tmux kill-session -t "=$session"
+    # Give processes in the old session a moment to release their ports.
+    sleep 1
+  else
+    die "tmux session '$session' already exists. Attach with: tmux attach -t $session
+       or start over with: scripts/start-demo --restart"
+  fi
+fi
+
+if [[ -n "$warehouse_failures" ]]; then
+  export DEMO_DATA_WAREHOUSE_RETRY_FAILURES="$warehouse_failures"
+fi
+
+# --- Preflight: config, API key, Temporal reachability --------------------
+
+info "Checking configuration"
+preflight_out="$(uv run --env-file .env python scripts/demo_preflight.py check)" \
+  || die "preflight failed (see above)"
+eval "$preflight_out"
+
+# Windows get the same environment the preflight saw: forward the demo
+# variables set in this shell, since tmux windows otherwise inherit the tmux
+# server's (possibly stale) environment. Secrets are not forwarded, because
+# tmux -e puts them on a command line; they must come from .env.
+env_args=()
+while IFS= read -r name; do
+  case "$name" in
+    OPENAI_*|TEMPORAL_*|DEMO_*|ORCHESTRATOR_*|RESEARCH_WORKER_*) ;;
+    *) continue ;;
+  esac
+  case "$name" in
+    *KEY*|*SECRET*|*TOKEN*)
+      grep -q "^${name}=" .env \
+        || die "$name is set in your shell but not in .env; start-demo only passes
+       secrets through .env. Add it there."
+      ;;
+    *) env_args+=(-e "$name=${!name}") ;;
+  esac
+done < <(compgen -e)
+
+new_window() {
+  # new_window NAME COMMAND: run COMMAND under bash in a new window. The window
+  # is created idle so remain-on-exit is set before COMMAND starts; that keeps
+  # the window, and its error output, even if COMMAND exits immediately.
+  local name="$1" cmd="$2"
+  if tmux has-session -t "=$session" 2>/dev/null; then
+    tmux new-window -d -t "=$session:" -n "$name" -c "$repo_dir" "sleep 86400"
+  else
+    tmux new-session -d -s "$session" -n "$name" -c "$repo_dir" "sleep 86400"
+  fi
+  tmux set-option -w -t "=$session:$name" remain-on-exit on
+  tmux respawn-pane -k -t "=$session:$name" -c "$repo_dir" \
+    ${env_args[@]+"${env_args[@]}"} bash -c "$cmd"
+}
+
+# --- Temporal ---------------------------------------------------------------
+
+started_temporal=0
+if [[ "$PREFLIGHT_TEMPORAL_UP" == "1" ]]; then
+  info "Using existing Temporal server at $PREFLIGHT_TEMPORAL_TARGET"
+elif [[ "$PREFLIGHT_TEMPORAL_IS_LOCAL" != "1" ]]; then
+  die "Temporal at $PREFLIGHT_TEMPORAL_TARGET is not reachable, and it isn't a local
+       address, so not starting a dev server. Check TEMPORAL_ADDRESS / TEMPORAL_PROFILE."
+else
+  command -v temporal >/dev/null 2>&1 \
+    || die "no Temporal server at $PREFLIGHT_TEMPORAL_TARGET and the 'temporal' CLI is not installed"
+  ui_port=$((PREFLIGHT_TEMPORAL_PORT + 1000))
+  listener="$(port_listener "$PREFLIGHT_TEMPORAL_PORT")"
+  [[ -z "$listener" ]] || die "port $PREFLIGHT_TEMPORAL_PORT is in use but isn't answering as Temporal:
+$listener"
+  info "Starting Temporal dev server on port $PREFLIGHT_TEMPORAL_PORT (UI on $ui_port)"
+  temporal_cmd="temporal server start-dev --port $PREFLIGHT_TEMPORAL_PORT --ui-port $ui_port --log-level warn"
+  # The dev server always creates 'default'; pre-create any other namespace.
+  if [[ "$PREFLIGHT_TEMPORAL_NAMESPACE" != "default" ]]; then
+    temporal_cmd="$temporal_cmd --namespace $PREFLIGHT_TEMPORAL_NAMESPACE"
+  fi
+  new_window temporal "$temporal_cmd"
+  started_temporal=1
+  uv run --env-file .env python scripts/demo_preflight.py wait-temporal --timeout 30 \
+    || die "Temporal dev server did not start; see: tmux attach -t $session"
+fi
+
+# --- Ollama (local fallback model) ------------------------------------------
+
+if [[ -z "$PREFLIGHT_LOCAL_MODEL" ]]; then
+  info "Local fallback model disabled (DEMO_MODEL_LOCAL is empty)"
+else
+  # The base URL is OpenAI-compatible (.../v1); Ollama's native API is at the root.
+  ollama_root="${PREFLIGHT_LOCAL_BASE_URL%/}"
+  ollama_root="${ollama_root%/v1}"
+  if ! curl -sf -m 2 "$ollama_root/api/tags" >/dev/null; then
+    case "$ollama_root" in
+      http://localhost:*|http://127.0.0.1:*)
+        if command -v ollama >/dev/null 2>&1; then
+          info "Starting Ollama for the local fallback model"
+          new_window ollama "ollama serve"
+          for _ in $(seq 1 20); do
+            curl -sf -m 2 "$ollama_root/api/tags" >/dev/null && break
+            sleep 1
+          done
+        fi
+        ;;
+    esac
+  fi
+  if tags="$(curl -sf -m 2 "$ollama_root/api/tags")"; then
+    if [[ "$tags" == *"\"name\":\"$PREFLIGHT_LOCAL_MODEL\""* ]]; then
+      info "Local fallback model $PREFLIGHT_LOCAL_MODEL is available"
+    else
+      warn "Ollama is running but $PREFLIGHT_LOCAL_MODEL is not pulled; the local
+         fallback will fail. Run: ollama pull $PREFLIGHT_LOCAL_MODEL"
+    fi
+  else
+    warn "Ollama is not reachable at $ollama_root; the local fallback layer will
+         fail. Install/start Ollama, or set DEMO_MODEL_LOCAL='' to disable it."
+  fi
+fi
+
+# --- Worker and backend -----------------------------------------------------
+
+listener="$(port_listener "$backend_port")"
+[[ -z "$listener" ]] || die "port $backend_port is already in use (an old backend?):
+$listener"
+
+info "Starting worker (warehouse failures: $PREFLIGHT_WAREHOUSE_FAILURES)"
+new_window worker 'while true; do
+  uv run --env-file .env openai_agents/run_worker.py
+  code=$?
+  echo
+  echo "Worker exited (code $code). Press Enter to restart it."
+  read -r _ || exit "$code"
+done'
+
+info "Starting backend"
+new_window backend "uv run --env-file .env ui/backend/main.py"
+
+new_window shell 'cat <<EOF
+Research demo shell. Useful commands:
+  bash scripts/crash-worker          kill the worker (restart it in the worker window)
+  bash scripts/show-history <wf-id>  event timeline for a workflow
+  bash scripts/demo-status <wf-id>   backend status/result for a workflow
+  scripts/stop-demo                  stop everything in this tmux session
+
+EOF
+exec "${SHELL:-bash}" -l'
+
+info "Waiting for the backend"
+backend_up=0
+for _ in $(seq 1 60); do
+  if curl -sf -m 2 "http://127.0.0.1:$backend_port/api/health" >/dev/null; then
+    backend_up=1
+    break
+  fi
+  sleep 1
+done
+[[ "$backend_up" -eq 1 ]] \
+  || die "backend did not come up on port $backend_port; see the 'backend' window: tmux attach -t $session"
+
+ui_url="http://localhost:$((PREFLIGHT_TEMPORAL_PORT + 1000))"
+echo
+echo "Research demo is running in tmux session '$session'."
+echo "  Chat UI:      http://127.0.0.1:$backend_port"
+if [[ "$started_temporal" -eq 1 ]]; then
+  echo "  Temporal UI:  $ui_url (dev server started by this script; in-memory, so"
+  echo "                its history is lost when the session stops)"
+elif [[ "$PREFLIGHT_TEMPORAL_IS_LOCAL" == "1" ]]; then
+  echo "  Temporal UI:  $ui_url (existing server)"
+else
+  echo "  Temporal:     $PREFLIGHT_TEMPORAL_TARGET (namespace $PREFLIGHT_TEMPORAL_NAMESPACE)"
+fi
+echo "  Windows:      $(tmux list-windows -t "=$session" -F '#W' | tr '\n' ' ')"
+if [[ "$session" == "research-demo" ]]; then
+  echo "  Stop:         scripts/stop-demo"
+else
+  echo "  Stop:         scripts/stop-demo $session"
+fi
+echo
+
+tmux select-window -t "=$session:worker"
+if [[ "$attach" -eq 1 ]]; then
+  if [[ -n "${TMUX:-}" ]]; then
+    tmux switch-client -t "=$session"
+  else
+    tmux attach -t "=$session"
+  fi
+fi
