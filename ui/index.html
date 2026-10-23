@@ -502,6 +502,14 @@
             userInput.placeholder = complete ? POST_COMPLETE_PLACEHOLDER : INITIAL_PLACEHOLDER;
         }
 
+        function showResearchFailed() {
+            showSpinner(false);
+            clearStatusTimers();
+            localStorage.removeItem(ACTIVE_WORKFLOW_KEY);
+            setAgentStatus('Failed');
+            addMessage('The research could not be completed. The Temporal UI shows why this workflow failed.');
+        }
+
         function startFreshChat() {
             // Invalidate any in-flight pollStatus loops so they exit on next tick.
             pollGeneration += 1;
@@ -686,6 +694,9 @@
                     addReportCard(result, workflowId);
                     setResearchComplete(true);
 
+                } else if (status.status === 'failed') {
+                    showResearchFailed();
+
                 } else {
                     // Other states - keep polling
                     setTimeout(() => pollStatus(generation), 1000);
@@ -737,6 +748,8 @@
                     addMessage('I finished the research. The report is ready to review.');
                     addReportCard(result, workflowId);
                     setResearchComplete(true);
+                } else if (status.status === 'failed') {
+                    showResearchFailed();
                 } else if (status.status === 'awaiting_user_input' && status.pending_elicitation) {
                     pendingElicitation = status.pending_elicitation;
                     setAgentStatus('Needs input');

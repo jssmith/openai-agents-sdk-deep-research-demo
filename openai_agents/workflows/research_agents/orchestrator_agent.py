@@ -6,8 +6,12 @@ to tools through the run context, which is the workflow instance itself.
 
 Determinism is enforced *structurally*: required Pydantic-typed tool arguments
 mean the agent cannot reach finalize_report without having gathered every input
-(clarification answers, search summaries, warehouse summary, image path,
-written report). No post-hoc validator is needed.
+(clarification answers, search summaries, warehouse summary, written report).
+No post-hoc validator is needed.
+
+The generated image is deliberately NOT a finalize field: its path is ground
+truth recorded by generate_research_image via wf.set_image, and the model must
+never be asked to echo a filename it doesn't own (see FinalizeReportRequest).
 """
 
 import os
@@ -22,6 +26,7 @@ from pydantic import BaseModel, Field
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+from openai_agents.demo_config import load_demo_settings
 from openai_agents.workflows.enterprise_data_activities import (
     DATA_WAREHOUSE_MAX_ATTEMPTS,
     DataWarehouseRequest,
@@ -36,9 +41,10 @@ from openai_agents.workflows.research_agents.research_worker_agent import (
     SearchSummary,
 )
 
-# Read at import time so replaying a workflow uses the same activity policy even
-# if a replacement worker has different environment variables.
-IMAGE_MAX_ATTEMPTS = int(os.getenv("DEMO_IMAGE_MAX_ATTEMPTS", "1") or "1")
+# Read once at import. Retry options are not checked on replay, so workers with
+# different values don't cause nondeterminism; each worker simply schedules new
+# image activities with its own policy.
+IMAGE_MAX_ATTEMPTS = load_demo_settings().image_max_attempts
 
 # ctx.context is always an InteractiveResearchWorkflow at runtime, but we type
 # it as Any here to avoid a circular import (the workflow imports this module).
@@ -79,8 +85,9 @@ SYSTEM_PROMPT = (
     "After all of these have run, you finish by emitting a structured "
     "FinalizeReportRequest as your final response. This is the only valid way to "
     "complete the task - the runtime parses your final response into that schema. "
-    "Include every field: the report you wrote, image_path, warehouse_summary, and "
-    "search_summaries. The system requires all of them.\n"
+    "Include every field: the report you wrote, warehouse_summary, and "
+    "search_summaries. The system requires all of them. Do NOT include the image "
+    "path - the system already recorded it when generate_research_image ran.\n"
     "\n"
     "Report style guidance for the final response:\n"
     "- markdown_report: tight, executive-ready markdown. 150-200 words MAX. Start with "
@@ -150,7 +157,10 @@ class FinalizeReportRequest(BaseModel):
     short_summary: Annotated[str, Field(min_length=1)]
     markdown_report: Annotated[str, Field(min_length=300)]
     follow_up_questions: Annotated[list[str], Field(min_length=2, max_length=5)]
-    image_path: Annotated[str, Field(min_length=1)]
+    # NOTE: no image_path field. The image path is ground truth recorded by
+    # generate_research_image via wf.set_image; asking the model to echo it here
+    # let a hand-copied filename overwrite the real path and surface a stale or
+    # broken image. Finalization reads self.research_image_path instead.
     warehouse_summary: Annotated[str, Field(min_length=1)]
     # min_length=3 means run_parallel_research must yield at least three
     # SearchSummary objects. tool_run_parallel_research currently swallows
@@ -218,15 +228,11 @@ async def query_data_warehouse(
             maximum_attempts=DATA_WAREHOUSE_MAX_ATTEMPTS,
         ),
     )
-    summary_str = (
+    return (
         f"Proprietary data warehouse context ({result.source}, "
         f"units={result.units_consumed}, "
         f"estimated_cost=${result.estimated_cost_usd:.2f}): {result.summary}"
     )
-    # Retain in workflow state so the deterministic floor can cite real
-    # internal data if the orchestrator later fails or the budget fires.
-    ctx.context.set_warehouse_summary(summary_str)
-    return summary_str
 
 
 @function_tool

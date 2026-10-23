@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from temporalio.client import Client
+from temporalio.client import Client, WorkflowExecutionStatus
 from temporalio.contrib.openai_agents._temporal_openai_agents import (
     OpenAIPayloadConverter,
 )
@@ -182,6 +182,14 @@ async def start_research(request: StartResearchRequest):
     }
 
 
+_FAILED_RUN_STATUSES = {
+    WorkflowExecutionStatus.FAILED,
+    WorkflowExecutionStatus.TERMINATED,
+    WorkflowExecutionStatus.TIMED_OUT,
+    WorkflowExecutionStatus.CANCELED,
+}
+
+
 @app.get("/api/status/{workflow_id}")
 async def get_status(workflow_id: str):
     """
@@ -193,11 +201,16 @@ async def get_status(workflow_id: str):
     """
     client = await get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
+    desc = await handle.describe()
     status = await handle.query(InteractiveResearchWorkflow.get_status)
+
+    # The workflow's own status can't report that the run itself failed (e.g.
+    # every model attempt was exhausted); the execution status can.
+    run_failed = desc.status in _FAILED_RUN_STATUSES
 
     return {
         "workflow_id": workflow_id,
-        "status": status.status,
+        "status": "failed" if run_failed else status.status,
         "original_query": status.original_query,
         "research_completed": status.research_completed,
         "current_activity": status.current_activity,

@@ -69,7 +69,6 @@ async def test_worker_restart_preserves_pending_clarification():
                         "short_summary": "A test summary.",
                         "markdown_report": "# Housing Trends\n\n" + ("Evidence. " * 60),
                         "follow_up_questions": ["One?", "Two?"],
-                        "image_path": "temp_images/test.jpeg",
                         "warehouse_summary": "Test warehouse context.",
                         "search_summaries": [
                             {"query": "a", "summary": "A"},

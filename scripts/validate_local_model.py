@@ -4,9 +4,11 @@ Exercises the exact integration the workflow's layer-3 fallback relies on,
 WITHOUT needing OpenAI or Temporal:
 
   * AttemptAwareOpenAIProvider routing to the local Chat Completions endpoint
-  * _ChatSettingsScrubbingModel stripping reasoning/verbosity (which gpt-5 sets
+  * _LocalModel stripping reasoning/verbosity (which gpt-5 sets
     and Ollama rejects)
   * structured output (pydantic output_type) over Ollama's response_format
+  * the real research worker (which asks for web search) answering from the
+    model's own knowledge, labeled with MEMORY_ANSWER_PREFIX
 
 Run: uv run python scripts/validate_local_model.py [model_name]
 
@@ -23,7 +25,14 @@ from agents.model_settings import ModelSettings
 from openai.types.shared.reasoning import Reasoning
 from pydantic import BaseModel, Field
 
-from openai_agents.model_provider import AttemptAwareOpenAIProvider
+from openai_agents.model_provider import (
+    MEMORY_ANSWER_PREFIX,
+    AttemptAwareOpenAIProvider,
+)
+from openai_agents.workflows.research_agents.research_worker_agent import (
+    SearchSummary,
+    new_research_worker_agent,
+)
 
 
 class MiniReport(BaseModel):
@@ -49,7 +58,7 @@ async def main() -> int:
         local_attempt=1,
     )
     model = provider.get_model("gpt-5")
-    print(f"Routed model type: {type(model).__name__} (expect _ChatSettingsScrubbingModel)")
+    print(f"Routed model type: {type(model).__name__} (expect _LocalModel)")
 
     # reasoning + verbosity are the gpt-5-only settings that must be scrubbed
     # before the request reaches Ollama.
@@ -83,7 +92,21 @@ async def main() -> int:
     assert 2 <= len(report.follow_up_questions) <= 5
     print("\nPASS: local model produced valid structured output via the SDK "
           "chat-completions path with reasoning/verbosity scrubbed.")
+
+    # The research worker requires web search, which Ollama can't run. On the
+    # local attempt it must answer from memory and say so.
+    worker = new_research_worker_agent().clone(model=model)
+    result = await Runner.run(
+        worker, "Subquery: recent adoption of durable execution for AI agents"
+    )
+    summary = result.final_output_as(SearchSummary)
+    print("\n=== research worker without web search ===")
+    print("summary:", summary.summary[:200])
     await provider.aclose()
+    if not summary.summary.startswith(MEMORY_ANSWER_PREFIX):
+        print(f"\nFAIL: summary does not start with {MEMORY_ANSWER_PREFIX!r}")
+        return 1
+    print("\nPASS: research worker answered from memory, labeled as such.")
     return 0
 
 

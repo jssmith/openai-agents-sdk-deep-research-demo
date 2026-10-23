@@ -31,9 +31,6 @@ class DemoSettings:
     model_local_base_url: str
     model_local_http_timeout_seconds: int
     model_local_attempt: int
-    # Optional hard wall-clock cap on the whole run (0 = disabled, the default;
-    # a single timer, not a polling loop, so the Temporal history stays clean).
-    total_budget_seconds: int
     # Data-warehouse failure injection: how many leading attempts fail before
     # the lookup succeeds. 0 = clean. The loader validates this stays below
     # DATA_WAREHOUSE_MAX_ATTEMPTS, so an injected-failure run always recovers
@@ -85,8 +82,8 @@ def load_demo_settings() -> DemoSettings:
     # Every allowed value must recover within the retry budget: the activity's
     # RetryPolicy allows DATA_WAREHOUSE_MAX_ATTEMPTS attempts, so at most
     # DATA_WAREHOUSE_MAX_ATTEMPTS - 1 leading failures still succeed (on the
-    # final attempt). Reject values that would exhaust the budget rather than
-    # relying on the never-fail floor to catch an exhausted lookup.
+    # final attempt). Reject values that would exhaust the budget and turn the
+    # recovery demo into a failed run.
     retry_failures = _int_env("DEMO_DATA_WAREHOUSE_RETRY_FAILURES", 0)
     max_failures = DATA_WAREHOUSE_MAX_ATTEMPTS - 1
     if not 0 <= retry_failures <= max_failures:
@@ -100,7 +97,7 @@ def load_demo_settings() -> DemoSettings:
     settings = DemoSettings(
         model_start_to_close_seconds=_int_env("DEMO_MODEL_START_TO_CLOSE_SECONDS", 100),
         model_schedule_to_close_seconds=_int_env(
-            "DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS", 240
+            "DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS", 300
         ),
         model_retry_delay_seconds=_int_env("DEMO_MODEL_RETRY_DELAY_SECONDS", 3),
         model_max_attempts=_int_env("DEMO_MODEL_MAX_ATTEMPTS", 3),
@@ -115,7 +112,6 @@ def load_demo_settings() -> DemoSettings:
             "DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS", 90
         ),
         model_local_attempt=_int_env("DEMO_MODEL_LOCAL_ATTEMPT", 3),
-        total_budget_seconds=_int_env("DEMO_TOTAL_BUDGET_SECONDS", 0),
         data_warehouse_retry_failures=retry_failures,
         data_warehouse_first_attempt_seconds=_float_env(
             "DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS", 1.0
@@ -132,4 +128,56 @@ def load_demo_settings() -> DemoSettings:
             "cannot overlap its retry."
         )
 
+    if settings.model_max_attempts < 1:
+        raise ValueError(
+            f"DEMO_MODEL_MAX_ATTEMPTS must be >= 1, got {settings.model_max_attempts}"
+        )
+    if settings.image_max_attempts < 1:
+        raise ValueError(
+            f"DEMO_IMAGE_MAX_ATTEMPTS must be >= 1, got {settings.image_max_attempts}"
+        )
+
+    if settings.model_local:
+        _validate_local_layer(settings)
+
     return settings
+
+
+def _validate_local_layer(settings: DemoSettings) -> None:
+    """Reject configurations where the local layer could never do its job."""
+    # Otherwise Temporal stops retrying before the local attempt is reached
+    # and the local layer is silently never used.
+    if not 1 <= settings.model_local_attempt <= settings.model_max_attempts:
+        raise ValueError(
+            "DEMO_MODEL_LOCAL_ATTEMPT "
+            f"({settings.model_local_attempt}) must be between 1 and "
+            f"DEMO_MODEL_MAX_ATTEMPTS ({settings.model_max_attempts}); set "
+            "DEMO_MODEL_LOCAL='' to disable the local layer."
+        )
+    # Same overlap invariant as the cloud client.
+    if (
+        settings.model_local_http_timeout_seconds
+        >= settings.model_start_to_close_seconds
+    ):
+        raise ValueError(
+            "DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS "
+            f"({settings.model_local_http_timeout_seconds}) must be less than "
+            "DEMO_MODEL_START_TO_CLOSE_SECONDS "
+            f"({settings.model_start_to_close_seconds})."
+        )
+    # Worst case (every earlier attempt hangs to start-to-close) the local
+    # attempt must still get its full HTTP timeout before schedule-to-close
+    # expires; otherwise it is starved in exactly the case it exists for.
+    worst_case = (settings.model_local_attempt - 1) * (
+        settings.model_start_to_close_seconds + settings.model_retry_delay_seconds
+    ) + settings.model_local_http_timeout_seconds
+    if worst_case > settings.model_schedule_to_close_seconds:
+        raise ValueError(
+            "DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS "
+            f"({settings.model_schedule_to_close_seconds}) is too short for the "
+            f"local layer: if attempts 1-{settings.model_local_attempt - 1} hang "
+            "to start-to-close, the local attempt needs until "
+            f"{worst_case}s to use its full DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS. "
+            f"Set DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS to at least {worst_case} "
+            "(default 300), or DEMO_MODEL_LOCAL='' to disable the local layer."
+        )

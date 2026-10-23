@@ -16,17 +16,10 @@ import os
 from dataclasses import dataclass
 
 from temporalio import workflow
-from temporalio.exceptions import ApplicationError
+from temporalio.exceptions import ActivityError, ApplicationError
 
 # Read at module-import time so the workflow body stays deterministic.
 ORCHESTRATOR_MAX_TURNS = int(os.getenv("ORCHESTRATOR_MAX_TURNS", "30"))
-# Optional hard wall-clock cap on the whole run. DISABLED by default (0) so the
-# workflow history stays clean — the never-fail deterministic floor and the
-# per-model-call Temporal timeouts already bound the run. When set > 0, a single
-# timer races the orchestrator and, if it fires, we abandon model work and
-# return the deterministic floor. It's a single timer, not a polling loop, to
-# keep the Temporal UI uncluttered for the demo.
-TOTAL_BUDGET_SECONDS = int(os.getenv("DEMO_TOTAL_BUDGET_SECONDS", "0"))
 
 with workflow.unsafe.imports_passed_through():
     # Eagerly load pydantic's transitive deps so the workflow sandbox
@@ -35,10 +28,9 @@ with workflow.unsafe.imports_passed_through():
     import annotated_types  # noqa: F401
 
     from agents import Runner
+    from agents.exceptions import AgentsException
+    from temporalio.contrib.openai_agents import AgentsWorkflowError
 
-    from openai_agents.workflows.research_agents.deterministic_report import (
-        build_deterministic_report,
-    )
     from openai_agents.workflows.research_agents.orchestrator_agent import (
         FinalizeReportRequest,
         ProgressPlan,
@@ -55,6 +47,14 @@ with workflow.unsafe.imports_passed_through():
         SearchSummary,
         new_research_worker_agent,
     )
+
+# Failures meaning the agent could not produce a report: every model attempt
+# (primary, cloud fallback, local) exhausted (ActivityError, possibly rewrapped
+# by the plugin as AgentsWorkflowError), or the agent run itself failed
+# (MaxTurnsExceeded, ModelBehaviorError, ...). These fail the workflow
+# visibly. Anything else is a bug and fails the workflow task so it can be
+# fixed and replayed.
+_SYNTHESIS_FAILURES = (ActivityError, AgentsException, AgentsWorkflowError)
 
 
 @dataclass
@@ -88,11 +88,6 @@ class InteractiveResearchWorkflow:
         self.pending_elicitation: Elicitation | None = None
         self.completed_elicitations: list[Elicitation] = []
         self._elicitation_counter: int = 0
-        # Retained so the deterministic floor can assemble a report from real
-        # findings if the orchestrator fails or the budget fires. The agent
-        # receives these as tool results; the workflow keeps its own copy.
-        self.search_summaries: list[SearchSummary] = []
-        self.warehouse_summary: str | None = None
 
     # ------------------------------------------------------------------
     # Helpers used by orchestrator tools (called from agent context)
@@ -191,29 +186,24 @@ class InteractiveResearchWorkflow:
         results = await asyncio.gather(
             *[_run_one(sq) for sq in subqueries], return_exceptions=False
         )
-        summaries = [r for r in results if r is not None]
-        # Retain for the deterministic floor (see __init__).
-        self.search_summaries = summaries
-        return summaries
-
-    def set_warehouse_summary(self, summary: str) -> None:
-        """Workflow-state tool helper: record the data-warehouse context.
-
-        Retained so the deterministic floor can cite real internal data if the
-        orchestrator later fails or the budget fires.
-        """
-        self.warehouse_summary = summary
+        return [r for r in results if r is not None]
 
     def set_image(self, image_path: str, description: str) -> None:
         """Workflow-state tool helper: record the generated research image."""
         self.research_image_path = image_path
         self.research_image_description = description
 
-    def complete_research(self, report: ReportData, image_path: str) -> None:
-        """Workflow-state tool helper: mark the workflow complete with the report."""
+    def complete_research(self, report: ReportData) -> None:
+        """Workflow-state tool helper: mark the workflow complete with the report.
+
+        The research image path is intentionally not passed in here: set_image
+        already recorded the ground-truth path returned by the image activity,
+        and that is the value surfaced to the UI. Finalization must not overwrite
+        it with a model-echoed filename (which could resolve to a stale or
+        missing file).
+        """
         self.current_activity = "writing"
         self.report_data = report
-        self.research_image_path = image_path
         self.research_completed = True
 
     # ------------------------------------------------------------------
@@ -242,10 +232,10 @@ class InteractiveResearchWorkflow:
         for the start_research update; the FastAPI backend sends that update
         with the user's query right after start_workflow.
 
-        Robustness contract: this method ALWAYS returns a valid report and
-        never raises. On any model failure the orchestrator degrades to a
-        deterministic, no-model floor. An optional single-timer wall-clock cap
-        (DEMO_TOTAL_BUDGET_SECONDS, off by default) can also force the floor.
+        Robustness comes from time and fallbacks, never from faking success:
+        each model call gets generous timeouts and falls back from the primary
+        cloud model to a faster cloud model to a local model across Temporal
+        retries. If every layer fails, the workflow fails visibly.
         """
         await workflow.wait_condition(
             lambda: self.workflow_ended or self.research_initialized
@@ -260,40 +250,6 @@ class InteractiveResearchWorkflow:
             "research_initialized was set without an original_query"
         )
 
-        # Default path: no wall-clock cap, no extra timers — the original flow,
-        # bounded by the per-model-call Temporal timeouts and guaranteed to
-        # finish by the deterministic floor on failure.
-        if TOTAL_BUDGET_SECONDS <= 0:
-            return await self._synthesize_or_floor()
-
-        # Opt-in hard cap: a SINGLE timer races the orchestrator. If it fires,
-        # abandon model work and return the deterministic floor.
-        orch_task = asyncio.ensure_future(self._synthesize_or_floor())
-        budget_task = asyncio.ensure_future(workflow.sleep(TOTAL_BUDGET_SECONDS))
-
-        await workflow.wait(
-            [orch_task, budget_task], return_when=asyncio.FIRST_COMPLETED
-        )
-
-        if orch_task.done():
-            await self._cancel_and_drain(budget_task)
-            return orch_task.result()
-
-        workflow.logger.warning(
-            "Wall-clock budget of %ss exceeded; returning deterministic floor.",
-            TOTAL_BUDGET_SECONDS,
-        )
-        await self._cancel_and_drain(orch_task)
-        return self._deterministic_floor_result()
-
-    async def _synthesize_or_floor(self) -> InteractiveResearchResult:
-        """Run the orchestrator; on ANY failure, return the deterministic floor.
-
-        A failure here means every model layer (primary, cloud fallback, local)
-        was exhausted, or the agent produced output that didn't satisfy the
-        FinalizeReportRequest schema. Either way we degrade to a report built
-        from the research already captured in workflow state.
-        """
         orchestrator = new_orchestrator_agent()
         self.current_activity = "planning"
         try:
@@ -303,57 +259,29 @@ class InteractiveResearchWorkflow:
                 context=self,
                 max_turns=ORCHESTRATOR_MAX_TURNS,
             )
-
-            if self.workflow_ended and not self.research_completed:
+        except _SYNTHESIS_FAILURES as e:
+            if self.workflow_ended:
                 return self._build_result(
                     "Research ended by user", "Research workflow ended by user"
                 )
+            # Non-retryable: retrying the workflow task would replay the same
+            # exhausted model calls. Fail the run so the UI reports it.
+            raise ApplicationError(
+                f"Research could not be completed: {e}", non_retryable=True
+            ) from e
 
-            final = run_result.final_output_as(FinalizeReportRequest)
-            report = ReportData(
-                short_summary=final.short_summary,
-                markdown_report=final.markdown_report,
-                follow_up_questions=final.follow_up_questions,
-            )
-            self.complete_research(report, final.image_path)
+        if self.workflow_ended and not self.research_completed:
             return self._build_result(
-                report.short_summary,
-                report.markdown_report,
-                report.follow_up_questions,
-                self.research_image_path,
+                "Research ended by user", "Research workflow ended by user"
             )
-        except asyncio.CancelledError:
-            # Budget guard cancelled us; let run() handle the floor.
-            raise
-        except Exception as e:
-            workflow.logger.exception(
-                f"Orchestrator synthesis failed; using deterministic floor: {e}"
-            )
-            return self._deterministic_floor_result()
 
-    async def _cancel_and_drain(self, task: asyncio.Future) -> None:
-        """Cancel a task and swallow its terminal exception.
-
-        Swallows CancelledError (expected) and any Exception the task surfaces
-        while unwinding, since run() must never raise; KeyboardInterrupt /
-        SystemExit are intentionally left to propagate.
-        """
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-
-    def _deterministic_floor_result(self) -> InteractiveResearchResult:
-        """Assemble a guaranteed report from captured state — never raises."""
-        report = build_deterministic_report(
-            original_query=self.original_query or "",
-            completed_elicitations=self.completed_elicitations,
-            search_summaries=self.search_summaries,
-            warehouse_summary=self.warehouse_summary,
-            image_description=self.research_image_description,
+        final = run_result.final_output_as(FinalizeReportRequest)
+        report = ReportData(
+            short_summary=final.short_summary,
+            markdown_report=final.markdown_report,
+            follow_up_questions=final.follow_up_questions,
         )
-        self.complete_research(report, self.research_image_path or "")
+        self.complete_research(report)
         return self._build_result(
             report.short_summary,
             report.markdown_report,

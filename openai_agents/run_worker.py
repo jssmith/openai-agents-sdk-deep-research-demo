@@ -109,6 +109,13 @@ async def main():
     else:
         warehouse_outcome = f"recovers on attempt {failures + 1}"
 
+    # The cached image short-circuits live generation entirely; say so, since
+    # otherwise every run silently shows the same picture.
+    cached_image = os.getenv("DEMO_RESEARCH_IMAGE_PATH", "").strip()
+    image_source = (
+        f"CACHED {cached_image} (no live generation)" if cached_image else "live"
+    )
+
     # Print the *resolved* settings, never a mode name, so the banner can never
     # advertise behavior the worker isn't actually configured for.
     print(
@@ -125,7 +132,7 @@ async def main():
         f" fallback_model={demo_settings.model_fallback}"
         f" local_model={demo_settings.model_local or '(disabled)'}"
         f" local_attempt={demo_settings.model_local_attempt}"
-        f" total_budget={demo_settings.total_budget_seconds}s",
+        f" image={image_source!r}",
         flush=True,
     )
     worker = Worker(

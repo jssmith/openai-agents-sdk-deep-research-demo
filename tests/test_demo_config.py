@@ -24,7 +24,6 @@ def _clear_demo_env(monkeypatch):
         "DEMO_MODEL_LOCAL_BASE_URL",
         "DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS",
         "DEMO_MODEL_LOCAL_ATTEMPT",
-        "DEMO_TOTAL_BUDGET_SECONDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -35,19 +34,17 @@ def test_defaults(monkeypatch):
     settings = load_demo_settings()
 
     assert settings.model_start_to_close_seconds == 100
-    assert settings.model_schedule_to_close_seconds == 240
+    assert settings.model_schedule_to_close_seconds == 300
     assert settings.model_retry_delay_seconds == 3
     assert settings.model_max_attempts == 3
     assert settings.model_http_timeout_seconds == 90
     assert settings.model_fallback == "gpt-5-mini"
     assert settings.image_max_attempts == 1
-    # Local fallback + budget defaults.
+    # Local fallback defaults.
     assert settings.model_local == "qwen2.5:14b-instruct"
     assert settings.model_local_base_url == "http://localhost:11434/v1"
     assert settings.model_local_http_timeout_seconds == 90
     assert settings.model_local_attempt == 3
-    # Wall-clock cap disabled by default (keeps the Temporal history clean).
-    assert settings.total_budget_seconds == 0
     # Failure injection off by default (clean run).
     assert settings.data_warehouse_retry_failures == 0
     assert settings.data_warehouse_first_attempt_seconds == 1.0
@@ -125,6 +122,8 @@ def test_warehouse_retry_failures_malformed_fails(monkeypatch):
 def test_explicit_values_parsed(monkeypatch):
     _clear_demo_env(monkeypatch)
     monkeypatch.setenv("DEMO_MODEL_MAX_ATTEMPTS", "1")
+    # A single attempt can never reach the local layer, so it must be disabled.
+    monkeypatch.setenv("DEMO_MODEL_LOCAL", "")
     monkeypatch.setenv("DEMO_DATA_WAREHOUSE_RETRY_FAILURES", "0")
 
     settings = load_demo_settings()
@@ -133,17 +132,15 @@ def test_explicit_values_parsed(monkeypatch):
     assert settings.data_warehouse_retry_failures == 0
 
 
-def test_explicit_local_and_budget_overrides(monkeypatch):
+def test_explicit_local_overrides(monkeypatch):
     _clear_demo_env(monkeypatch)
     monkeypatch.setenv("DEMO_MODEL_LOCAL", "llama3.1:8b")
     monkeypatch.setenv("DEMO_MODEL_LOCAL_ATTEMPT", "2")
-    monkeypatch.setenv("DEMO_TOTAL_BUDGET_SECONDS", "120")
 
     settings = load_demo_settings()
 
     assert settings.model_local == "llama3.1:8b"
     assert settings.model_local_attempt == 2
-    assert settings.total_budget_seconds == 120
 
 
 def test_local_layer_can_be_disabled(monkeypatch):
@@ -153,3 +150,49 @@ def test_local_layer_can_be_disabled(monkeypatch):
     settings = load_demo_settings()
 
     assert settings.model_local == ""
+
+
+def test_local_attempt_beyond_max_attempts_fails(monkeypatch):
+    _clear_demo_env(monkeypatch)
+    # Temporal would stop retrying before attempt 4: the local layer never runs.
+    monkeypatch.setenv("DEMO_MODEL_LOCAL_ATTEMPT", "4")
+
+    with pytest.raises(ValueError, match="DEMO_MODEL_LOCAL_ATTEMPT"):
+        load_demo_settings()
+
+
+def test_local_attempt_starved_by_schedule_to_close_fails(monkeypatch):
+    _clear_demo_env(monkeypatch)
+    # 2 * (100 + 3) + 90 = 296s is needed; 240s would starve the local attempt.
+    monkeypatch.setenv("DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS", "240")
+
+    with pytest.raises(ValueError, match="too short for the local layer"):
+        load_demo_settings()
+
+
+def test_local_starvation_ignored_when_local_disabled(monkeypatch):
+    _clear_demo_env(monkeypatch)
+    monkeypatch.setenv("DEMO_MODEL_LOCAL", "")
+    monkeypatch.setenv("DEMO_MODEL_SCHEDULE_TO_CLOSE_SECONDS", "240")
+
+    assert load_demo_settings().model_schedule_to_close_seconds == 240
+
+
+def test_local_http_timeout_must_be_below_start_to_close(monkeypatch):
+    _clear_demo_env(monkeypatch)
+    monkeypatch.setenv("DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS", "100")
+
+    with pytest.raises(ValueError, match="DEMO_MODEL_LOCAL_HTTP_TIMEOUT_SECONDS"):
+        load_demo_settings()
+
+
+@pytest.mark.parametrize(
+    "name", ["DEMO_MODEL_MAX_ATTEMPTS", "DEMO_IMAGE_MAX_ATTEMPTS"]
+)
+def test_attempt_counts_must_be_positive(monkeypatch, name):
+    _clear_demo_env(monkeypatch)
+    monkeypatch.setenv("DEMO_MODEL_LOCAL", "")
+    monkeypatch.setenv(name, "0")
+
+    with pytest.raises(ValueError, match=name):
+        load_demo_settings()

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+from agents import FunctionTool, WebSearchTool
 from agents.model_settings import ModelSettings
 from openai.types.shared.reasoning import Reasoning
 
 from openai_agents import model_provider
 from openai_agents.model_provider import (
+    MEMORY_ANSWER_PREFIX,
     AttemptAwareOpenAIProvider,
-    _ChatSettingsScrubbingModel,
+    _LocalModel,
 )
 
 
@@ -53,9 +56,82 @@ def test_provider_routes_to_local_on_third_attempt(monkeypatch):
         "gpt-5-mini", 30, local_model="qwen2.5:14b-instruct", local_attempt=3
     )
     model = provider.get_model("gpt-5")
-    # Local path returns the scrubbing wrapper around the local provider's model.
-    assert isinstance(model, _ChatSettingsScrubbingModel)
-    assert model._inner == ("local", "qwen2.5:14b-instruct")
+    assert isinstance(model, _LocalModel)
+    assert model._local == ("local", "qwen2.5:14b-instruct")
+
+
+class _RecordingModel:
+    def __init__(self):
+        self.calls = []
+
+    async def get_response(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        return "response"
+
+
+def _function_tool() -> FunctionTool:
+    async def invoke(ctx, args):
+        return ""
+
+    return FunctionTool(
+        name="elicit_user",
+        description="",
+        params_json_schema={"type": "object", "properties": {}},
+        on_invoke_tool=invoke,
+    )
+
+
+async def _call(model: _LocalModel, tools, settings: ModelSettings):
+    return await model.get_response(
+        "system", "input", settings, tools, None, [], None, previous_response_id=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_model_passes_function_tools_through_with_scrubbed_settings():
+    local = _RecordingModel()
+    settings = ModelSettings(reasoning=Reasoning(effort="low"), temperature=0.5)
+    tools = [_function_tool()]
+
+    await _call(_LocalModel(local, "qwen"), tools, settings)
+
+    (args, kwargs), = local.calls
+    assert args[0] == "system"
+    assert args[2].reasoning is None
+    assert args[2].temperature == 0.5
+    assert args[3] == tools
+    assert kwargs == {"previous_response_id": None}
+
+
+@pytest.mark.asyncio
+async def test_hosted_tools_dropped_and_answer_labeled_as_from_memory():
+    """Ollama can't run web search: answer from memory, labeled as such."""
+    local = _RecordingModel()
+    settings = ModelSettings(reasoning=Reasoning(effort="low"), tool_choice="required")
+
+    await _call(_LocalModel(local, "qwen"), [WebSearchTool()], settings)
+
+    (args, _), = local.calls
+    system, _, sent_settings, sent_tools = args[:4]
+    assert system.startswith("system\n\n")
+    assert MEMORY_ANSWER_PREFIX in system
+    assert sent_tools == []
+    # "required" with no tools left would be rejected.
+    assert sent_settings.tool_choice is None
+    assert sent_settings.reasoning is None
+
+
+@pytest.mark.asyncio
+async def test_function_tools_kept_when_hosted_tools_dropped():
+    local = _RecordingModel()
+    settings = ModelSettings(tool_choice="required")
+    fn = _function_tool()
+
+    await _call(_LocalModel(local, "qwen"), [WebSearchTool(), fn], settings)
+
+    (args, _), = local.calls
+    assert args[3] == [fn]
+    assert args[2].tool_choice == "required"
 
 
 def test_local_attempt_threshold_respected(monkeypatch):
@@ -82,7 +158,7 @@ def test_scrub_nulls_reasoning_and_verbosity_preserves_rest():
         tool_choice="required",
         max_tokens=1500,
     )
-    scrubbed = _ChatSettingsScrubbingModel._scrub(settings)
+    scrubbed = _LocalModel._scrub(settings)
     assert scrubbed is not None
     assert scrubbed.reasoning is None
     assert scrubbed.verbosity is None
@@ -94,8 +170,8 @@ def test_scrub_nulls_reasoning_and_verbosity_preserves_rest():
 def test_scrub_noop_when_already_clean():
     settings = ModelSettings(temperature=0.2)
     # No reasoning/verbosity set -> same object returned (cheap fast path).
-    assert _ChatSettingsScrubbingModel._scrub(settings) is settings
+    assert _LocalModel._scrub(settings) is settings
 
 
 def test_scrub_handles_none():
-    assert _ChatSettingsScrubbingModel._scrub(None) is None
+    assert _LocalModel._scrub(None) is None

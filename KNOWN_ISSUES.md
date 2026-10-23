@@ -15,7 +15,9 @@ hit one of these and it bites, please file an issue or PR.
 research workers raise, the orchestrator only sees the surviving
 `SearchSummary` objects, then trips the `min_length=3` validator on
 `search_summaries` when emitting `FinalizeReportRequest` — with no clear
-signal back to the agent about *why*.
+signal back to the agent about *why*. The schema error surfaces as an
+agent-run failure and the workflow fails with "Research could not be
+completed", even though some research succeeded.
 
 **Why it's like this**: `tool_run_parallel_research` catches and logs
 exceptions per subquery and returns the survivors. That kept early

@@ -26,11 +26,26 @@ snapshot it was forked from. Per-commit history is in `git log`.
   actually use, e.g. `warehouse_retry_failures=8 warehouse_outcome='recovers
   on attempt 9' warehouse_max_attempts=10 model_max_attempts=3 …`, so docs
   don't have to repeat numbers that can drift.
+- **One-command launch.** `scripts/start-demo` validates the configuration,
+  reuses a reachable Temporal server or starts a dev server, starts Ollama
+  if the local fallback needs it, and runs the worker (in a restart loop for
+  the crash beat) and backend in tmux windows. `scripts/stop-demo` stops it.
 - **PID file rename.** The worker writes `.demo-worker.pid` on startup
   (was `.demo-worker-clean.pid`), and `scripts/crash-worker` targets it by
   default. Extra instances set `DEMO_WORKER_PID_FILE`
   (e.g. `.demo-worker-2.pid`) and are killed with `crash-worker 2`;
   `scripts/stop-demo-workers` still tracks `.demo-worker*.pid`.
+
+- **Model fallback across retries.** Each model call gets generous
+  timeouts, and Temporal retries move from the primary cloud model to a
+  faster cloud model to a local Ollama model (`DEMO_MODEL_*`, see
+  `.env-sample`). Ollama can't run web search, so on the local attempt the
+  research workers answer from the model's own knowledge, and their
+  summaries are labeled "From model knowledge, not a web search:". If every
+  attempt fails, the
+  workflow fails and the UI says so; the run never reports success it
+  didn't earn. The worker validates the timeouts at startup, including that
+  the local attempt gets its full timeout even if both cloud attempts hang.
 
 ## Architectural changes
 
