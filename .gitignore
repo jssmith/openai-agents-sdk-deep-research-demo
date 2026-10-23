@@ -132,3 +132,8 @@ pdf_output/
 temp_images/
 *.pdf
 .demo-worker*.pid
+
+# Local scratch output
+.playwright-mcp/
+soak_results.jsonl
+/*.png

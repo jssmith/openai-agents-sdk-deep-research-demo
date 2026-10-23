@@ -51,19 +51,18 @@ snapshot it was forked from. Per-commit history is in `git log`.
 
 - **Agentic refactor.** The original linear pipeline (Triage → Clarifying →
   Instruction → Planner → Search → Writer → PDF) was folded into a single
-  orchestrator agent that drives the workflow through tool calls. Required
-  Pydantic-typed tool arguments enforce step ordering — the runtime
-  structurally prevents skipping steps. Determinism comes from the workflow
-  shape, not post-hoc validators.
+  orchestrator agent that drives the workflow through tool calls. Tools
+  record their actual outcomes in workflow state, and the workflow checks
+  those outcomes before accepting the agent's report, so the agent cannot
+  claim work that never ran.
 - **Generic elicitation primitive.** Clarifying questions became a generic
   one-at-a-time elicitation contract: the agent calls `elicit_user`, the
   workflow publishes a single pending elicitation, and the frontend delivers
   the response back via a workflow update. The same primitive handles any
   future human-in-the-loop step.
-- **Parallel tool calls.** `query_data_warehouse` and
-  `generate_research_image` are issued in the same agent turn so they
-  execute concurrently. `run_parallel_research` fans out 4–6 research
-  worker sub-agents.
+- **Parallel work.** `run_parallel_research` fans out 4–6 research worker
+  sub-agents; `query_data_warehouse` and `generate_research_image` are
+  independent and can run in the same agent turn.
 - **Output-typed termination.** The orchestrator finalizes by emitting a
   structured `FinalizeReportRequest` as its final response, rather than
   calling a `finalize_report` tool. (gpt-5 occasionally serialized large
@@ -71,21 +70,18 @@ snapshot it was forked from. Per-commit history is in `git log`.
 
 ## Demo affordances
 
-- **Failure injection on the data warehouse activity.** Two env-var knobs
-  (`DEMO_DATA_WAREHOUSE_RETRY_FAILURES`, `DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS`)
-  stage retry-recoverable failures and slow attempts on demand. Off by
-  default for clean recordings. See README.md → "Failure injection".
-- **`scripts/crash-worker`.** SIGKILLs a named worker instance for the
-  worker-death beat. Enables the "Temporal moves the in-flight activity
-  to a fresh worker" recipe.
+- **Failure injection on the data warehouse activity.**
+  `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` stages retry-recoverable failures on
+  demand. Off by default for clean recordings. See README.md → "The two
+  recovery beats".
+- **`scripts/crash-worker`.** SIGKILLs the worker for the worker-death beat.
 - **Cached image fast-path.** `DEMO_RESEARCH_IMAGE_PATH` skips live image
   generation by pointing at a saved jpeg/png, for fast deterministic
   reruns during recording sessions.
-- **Topic-specific UI labels.** On its first elicit, the orchestrator
-  commits a three-card progress plan (planning / collecting / writing)
-  with topic-specific titles and details. The UI advances against the
-  workflow's `current_activity` rather than a generic boilerplate
-  timeline.
+- **Topic-specific UI labels.** The orchestrator may supply a three-card
+  progress plan (planning / collecting / writing) with topic-specific
+  titles and details; the UI otherwise uses fixed labels. The cards advance
+  with a phase derived from the workflow's recorded tool outcomes.
 
 ## UI
 

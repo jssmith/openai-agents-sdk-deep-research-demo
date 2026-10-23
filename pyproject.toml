@@ -11,17 +11,12 @@ dependencies = [
     # (PR #1563) that tolerates OpenAI response schema drift; 1.27.0 wedges
     # workflows on a web_search_call that omits `action`.
     "temporalio>=1.28.0,<2",
-    "openai-agents>=0.17.5,<0.19",
-    # openai-agents 0.18.0's Usage() default builds InputTokensDetails without
-    # cache_write_tokens, which openai 2.45.0 made a required field, so Usage()
-    # raises at runtime. Cap openai below 2.45 (the fix in openai-agents 0.18.1
-    # is still inside the 7-day cooldown). Lift the cap once >=0.18.1 is usable.
-    "openai>=2.36,<2.45",
+    # 0.18.1 fixes Usage() raising under openai>=2.45 (cache_write_tokens).
+    "openai-agents>=0.18.1,<0.19",
     # temporalio's contrib.openai_agents transitively imports
     # contrib.opentelemetry, so we need both extras together.
     "temporalio[openai-agents,opentelemetry]>=1.28.0",
     "pydantic>=2.13.0,<3",
-    "pillow>=11.0.0",
     "dotenv>=0.9.9",
     "fastapi>=0.136.0",
     "uvicorn>=0.37.0",
@@ -50,9 +45,8 @@ dev = [
 
 [tool.uv]
 default-groups = ["dev"]
-# No temporalio cooldown override: it falls under the global 7-day cooldown
-# like every other package. (Previously pinned to pre-2026-05-03 / 1.27.0,
-# which had the agents payload-converter poison-pill bug fixed in 1.28.0.)
+# Don't install packages published in the last 7 days.
+exclude-newer = "7 days"
 
 [tool.isort]
 profile = "black"

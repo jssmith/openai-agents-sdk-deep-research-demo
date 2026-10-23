@@ -23,7 +23,7 @@ flowchart TB
 
     subgraph WF["InteractiveResearchWorkflow (durable Temporal workflow)"]
         direction TB
-        State["Workflow state<br/>query • elicitations • progress_plan • report"]
+        State["Workflow state<br/>query • answers • recorded tool outcomes • report"]
         Orchestrator["OrchestratorAgent<br/>drives every step via tools"]
         State --- Orchestrator
     end
@@ -41,23 +41,34 @@ flowchart TB
 ```
 
 - **Workflow** (`openai_agents/workflows/interactive_research_workflow.py`):
-  durable state — original query, pending elicitation, completed elicitations,
-  current activity, progress plan, final report. Every user input is delivered
-  via a Temporal workflow update; every status read is a query.
+  durable state: the query, pending and answered clarifications, and the
+  outcomes the tools actually recorded (research findings and failed queries,
+  the warehouse result, the image). It starts with the query as input; each
+  answer arrives as a workflow update, and the UI reads status with a query.
+  Before accepting the agent's report, the workflow checks those recorded
+  outcomes, so a report that skipped the work fails visibly.
 - **Orchestrator agent** (`openai_agents/workflows/research_agents/orchestrator_agent.py`):
-  the only LLM-driven decision-maker. Required Pydantic-typed tool arguments
-  enforce step ordering structurally; the orchestrator emits a structured
-  `FinalizeReportRequest` as its terminal action.
+  the only LLM-driven decision-maker. It asks two clarifying questions,
+  chooses the research subqueries, calls the warehouse and image tools, and
+  emits a structured `FinalizeReportRequest` (summary, markdown report,
+  follow-ups) as its final output.
 - **Research worker** (`openai_agents/workflows/research_agents/research_worker_agent.py`):
-  the orchestrator fans this small sub-agent out via `WebSearchTool` for each
-  parallel subquery.
-- **Activities**: `enterprise_data_activities.py` (proprietary data lookup
-  with retry-recoverable failure injection) and `image_generation_activity.py`
-  (gpt-image generation, with a cached fast-path for repeatable demos).
+  a small sub-agent with `WebSearchTool`, fanned out in parallel, one per
+  subquery. A worker whose model attempts are exhausted is reported to the
+  orchestrator as a failed query; the report discloses the reduced coverage.
+- **Activities**: `enterprise_data_activities.py` (a simulated data warehouse
+  with injectable, retry-recoverable failures) and
+  `image_generation_activity.py` (gpt-image generation; if every attempt
+  fails, the report completes with a placeholder image).
+- **Model fallback** (`openai_agents/model_provider.py`): each model call's
+  Temporal retries move from the primary cloud model to a faster cloud model
+  to a local Ollama model, which answers research questions from its own
+  knowledge, labeled as such.
 - **FastAPI backend** (`ui/backend/main.py`): a thin HTTP layer that starts
   workflows, forwards updates and queries, and serves the static frontend.
-- **Frontend** (`ui/index.html`): vanilla-JS chat UI that polls the workflow
-  for state and renders a report card on completion.
+- **Frontend** (`ui/index.html`, `ui/success.html`): vanilla-JS chat UI that
+  polls the workflow for state and renders the report inline or as a full
+  page. The run's id is in the URL, so a reload resumes the conversation.
 
 ## Prerequisites
 
@@ -112,10 +123,11 @@ RESEARCH_WORKER_MODEL='gpt-5-mini'   # already the default
 OPENAI_IMAGE_MODEL='gpt-image-1'     # falls back from gpt-image-2
 ```
 
-To skip live image generation entirely, set `DEMO_RESEARCH_IMAGE_PATH`
-to a previously generated file (under `temp_images/`, which is
-gitignored). The activity returns the cached path immediately instead of
-calling the image API.
+To skip live image generation, e.g. for rehearsals, set
+`DEMO_RESEARCH_IMAGE_PATH` to a previously generated file under
+`temp_images/` (gitignored). The activity then returns that path instead of
+calling the image API; the worker refuses to start if the file is missing, and
+its banner shows `image='CACHED ...'`.
 
 ## Running the demo
 
@@ -123,7 +135,7 @@ One command starts everything in a tmux session:
 
 ```bash
 scripts/start-demo                          # clean run
-scripts/start-demo --warehouse-failures 8   # with the ~38s recovery beat
+scripts/start-demo --warehouse-failures 8   # with the ~40s retry beat
 scripts/stop-demo                           # stop it all
 ```
 
@@ -147,71 +159,24 @@ starts is in-memory, so its workflow history is lost when the session stops.
 To run the pieces by hand instead, use three terminals:
 
 ```bash
-# Terminal 1: worker
-uv run --env-file .env openai_agents/run_worker.py
-
-# Terminal 2: FastAPI backend + static frontend
-uv run ui/backend/main.py
-#   serves http://127.0.0.1:8234
-
-# Terminal 3: Temporal dev server (if not running already)
+# Terminal 1: Temporal dev server (if not running already)
 temporal server start-dev
 #   Temporal UI: http://localhost:8233
+
+# Terminal 2: worker (add DEMO_DATA_WAREHOUSE_RETRY_FAILURES=8 for the retry beat)
+uv run --env-file .env openai_agents/run_worker.py
+
+# Terminal 3: FastAPI backend + static frontend on http://127.0.0.1:8234
+uv run --env-file .env ui/backend/main.py
 ```
 
 Open <http://127.0.0.1:8234> in a browser, ask a research question, answer
 the two clarifying questions, and watch the workflow run through to a final
 markdown report. The Temporal UI shows the workflow history side-by-side.
 
-### Failure injection
-
-Failure injection is driven directly by the `DEMO_DATA_WAREHOUSE_RETRY_FAILURES`
-env var (an integer 0–9) — there are no more `DEMO_PROFILE` presets. It
-controls how many leading attempts of the `DataWarehouseLookup` activity fail
-before it succeeds:
-
-- `0` (the default) — clean run, the lookup succeeds on attempt 1.
-- `N` (1 ≤ N ≤ 9) — the lookup fails its first N attempts and recovers on
-  attempt N+1. `8` is the canonical recoverable-failure beat (~38s
-  end-to-end, most of it 4-second retry backoffs, recovering on attempt 9);
-  `2` is a quicker variant that recovers on attempt 3.
-
-The lookup's retry policy allows 10 attempts, so `9` is the largest value that
-still recovers. The worker rejects `10` or more at startup (that would exhaust
-the budget instead of recovering).
-
-Set it with a shell export in front of the plain `uv` launch (a shell export
-always wins over `.env`, where the knob is commented out so the default
-applies):
-
-```bash
-# Clean run
-uv run --env-file .env openai_agents/run_worker.py
-
-# Recovery beat: 8 failed attempts, recovers on attempt 9
-DEMO_DATA_WAREHOUSE_RETRY_FAILURES=8 uv run --env-file .env openai_agents/run_worker.py
-```
-
-The worker prints the *resolved* values it will actually use in its startup
-banner, e.g. `warehouse_retry_failures=8 warehouse_outcome='recovers on
-attempt 9' warehouse_max_attempts=10 model_max_attempts=3 …` — read the banner
-rather than trusting numbers repeated in docs, since the code defaults
-(model start-to-close, schedule-to-close, HTTP timeout, fallback model, and so
-on) can drift. If `DEMO_PROFILE` is still set in the environment the worker
-fails fast at startup and tells you to use `DEMO_DATA_WAREHOUSE_RETRY_FAILURES`
-instead.
-
-**Worker-death recovery beat.** Wait until the first clarification is visible,
-run `bash scripts/crash-worker`, restart the worker with the plain `uv`
-command, and then submit the answer. The pending question remains in workflow
-state and the workflow accepts the update after the replacement worker polls
-the task queue.
-
-**Activity-retry recovery beat.** Launch the worker with
-`DEMO_DATA_WAREHOUSE_RETRY_FAILURES=8` (or `2` for the shorter version) and
-inspect the `DataWarehouseLookup` activity in the Temporal UI. The leading
-attempts fail with the simulated connection reset, and the recovery attempt
-succeeds without re-running completed clarifications or research calls.
+The worker prints the *resolved* settings in its startup banner, e.g.
+`warehouse_retry_failures=8 warehouse_outcome='recovers on attempt 9'
+model_max_attempts=3 …`. Read the banner rather than numbers repeated in docs.
 
 ![Chat UI on the left, Temporal workflow execution graph on the right, mid-run.](ui/public/images/demo.png)
 
@@ -223,110 +188,64 @@ call or a `ResearchWorkerAgent` sub-agent), and `submit_elicitation_response`
 is the workflow update that delivered each user answer. The chat UI is
 just a thin view over this workflow state.
 
-The full end-to-end run takes 1–3 minutes depending on web-search latency
-and which failure-injection beats are enabled.
+## The two recovery beats
+
+[TALK_RUNBOOK.md](TALK_RUNBOOK.md) is the presenter script. In short:
+
+**Worker death.** Answer the first clarification. When the second one is on
+screen, run `scripts/crash-worker` (a real `kill -9`), restart the worker (press
+Enter in the `worker` window), and answer. The conversation continues: the
+question and the first answer were never in the worker; a new worker rebuilds
+the run from its Temporal history without repeating completed model calls.
+
+**Activity retries.** Start with `--warehouse-failures 8`. The
+`DataWarehouseLookup` activity fails its first 8 attempts with a simulated
+connection reset and succeeds on attempt 9, about 40s later (1s attempts, 4s
+apart). In the Temporal UI the pending activity's attempt count climbs while
+the completed clarifications and research stay done. Valid values are 0-9: the
+retry policy allows 10 attempts, and the worker rejects a value that would
+exhaust them.
+
+After a run, `scripts/show-history <workflow-id>` prints the activity
+timeline: scheduled, started, failed and completed events with attempt counts
+and failure messages.
 
 ## Demo helpers
 
 The `scripts/` directory contains presentation helpers, not production
 patterns:
 
-- `start-demo` / `stop-demo` — launch and stop the whole stack in tmux (see
-  "Running the demo").
-
-- `crash-worker [name]` — SIGKILL a worker. With no argument it targets
-  `.demo-worker.pid` (the file the worker writes on startup); pass a name
-  (e.g. `crash-worker 2`) to target `.demo-worker-<name>.pid`. Building
-  block for worker-death experiments; see
-  [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for why the worker-death recipe isn't
-  documented as a turn-key beat yet. To run a second worker instance,
-  launch it with `DEMO_WORKER_PID_FILE=.demo-worker-2.pid uv run --env-file
-  .env openai_agents/run_worker.py`.
-- `stop-demo-workers` — graceful shutdown of all worker instances tracked
-  by `.demo-worker*.pid`.
-- `check-ports` — quickly check who's listening on 7233 / 8233 / 8234.
-- `show-history <workflow-id>` — pretty-printed activity / failure /
-  completion event timeline from `temporal workflow show`.
-- `demo-status <workflow-id>` — hit the backend status and result endpoints
-  for a workflow.
-
-The `DEMO_*` environment variables in `.env-sample` control how aggressive
-the failure injection is. The shipped defaults are recording-clean (no
-crashes, fast warehouse). Flip them on for the failure-recovery moment —
-see the next section.
-
-## Failure injection
-
-The `DataWarehouseLookup` activity is the place where Temporal's recovery
-behavior shines. Two demo knobs in `.env` (or in the worker's environment)
-control how it misbehaves:
-
-| Env var | What it does |
-| --- | --- |
-| `DEMO_DATA_WAREHOUSE_RETRY_FAILURES` | Number of attempts that fail before the activity succeeds. `0` = always succeed on attempt 1. `8` = attempts 1–8 fail, attempt 9 succeeds. |
-| `DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS` | Latency of attempt 1 only. Subsequent attempts use a fixed 0.6s delay. |
-
-Defined in `openai_agents/workflows/enterprise_data_activities.py`. The
-activity's retry policy (4-second fixed backoff, max 10 attempts) lives in
-`openai_agents/workflows/research_agents/orchestrator_agent.py`.
-
-### Recoverable activity failure
-
-Temporal retries the activity in place. With `RETRY_FAILURES='8'` the
-audience sees 8 failed attempts and then a successful 9th attempt — about
-38s end-to-end (8 short attempts plus 8 × 4-second retry backoffs), with
-the workflow continuing without rerunning earlier work.
-
-Either edit `.env` (the worker reads it via `load_dotenv()`):
-
-```bash
-DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
-DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
-```
-
-…or `export` the values in the shell that starts the worker (a shell export
-always wins over `.env`):
-
-```bash
-export DEMO_DATA_WAREHOUSE_RETRY_FAILURES='8'
-export DEMO_DATA_WAREHOUSE_FIRST_ATTEMPT_SECONDS='1'
-uv run --env-file .env openai_agents/run_worker.py
-```
-
-What to highlight in the Temporal UI:
-
-- The workflow's pending activity stays as `DataWarehouseLookup` for ~32s.
-- Click the activity → **Pending Activities** shows attempt count climbing
-  and the `lastFailure` message: *"Simulated remote connection reset…"*.
-- The earlier completed events (clarifications, search summaries) are
-  unchanged. The retry only re-runs the failing activity.
-- After attempt 9 the activity completes and the workflow proceeds.
-
-### Inspecting after the fact
-
-```bash
-bash scripts/show-history <workflow-id>
-```
-
-Prints a TSV of activity-scheduled / started / failed / completed events,
-the attempt counter, and the failure message — handy for stepping through
-what Temporal actually did.
+- `start-demo` / `stop-demo`: launch and stop the whole stack in tmux.
+- `crash-worker`: SIGKILL the worker recorded in `.demo-worker.pid` (written
+  by the worker on startup), after checking that the pid really is a worker.
+- `check-ports`: who's listening on 7233 / 8233 / 8234.
+- `show-history <workflow-id>`: activity / failure / completion timeline from
+  `temporal workflow show`.
+- `demo-status <workflow-id>`: the backend's status and result for a workflow.
+- `demo_smoke.py`: drive real runs end to end without the browser and record
+  their outcomes.
+- `validate_local_model.py`: check the local Ollama fallback model against the
+  real agents, without OpenAI or Temporal.
 
 ## Development
 
 ```bash
+# Tests (time-skipping Temporal test server; the worker-restart test starts a
+# local dev server)
+uv run python -m pytest tests
+
 # Lint
 uv run ruff check --select F401,F841
-
-# Type check
-uv run pyright .
 ```
+
+The workflow tests script both agents with a fake model and cover the full
+flow, model fallback, partial research, an unavailable image, warehouse
+retries, a report that skipped the work, and a worker replaced at the second
+question.
 
 ## Known issues
 
-See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for documented limitations and
-their planned fixes — silent subquery failures, retry-policy ceiling,
-inherited commercial fonts, and a couple of others.
+See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for documented limitations.
 
 ## Attribution
 
